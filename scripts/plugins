@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Lists the installed shell plugins a plugin tile can show: those with a bar
+# widget, whose menu the tile borrows, or a DeskTile.qml of their own.
+# [{"id", "name", "dir", "barWidget", "deskTile", "optOut"}], by name. A
+# plugin opts out in its manifest with "deskTile": {"supported": false,
+# "message": "…"}; optOut then holds that message (or "").
+
+set -uo pipefail
+
+SELF="woodenplastic.information-wallpaper-overlay"
+
+for manifest in "$HOME"/.config/omarchy/plugins/*/manifest.json /usr/share/omarchy/shell/plugins/*/manifest.json /usr/share/omarchy/shell/plugins/*/*/manifest.json; do
+  [[ -f $manifest ]] || continue
+  dir=${manifest%/manifest.json}
+  desk=false
+  [[ -f $dir/DeskTile.qml ]] && desk=true
+  jq -c --arg dir "$dir" --arg self "$SELF" --argjson desk "$desk" '
+    select(.id != $self and (.entryPoints.barWidget != null or $desk))
+    | {id, name: (.barWidget.displayName // .name // .id), dir: $dir, barWidget: (.entryPoints.barWidget // ""), deskTile: $desk,
+       optOut: (if (.deskTile | type) == "object" and .deskTile.supported == false then (.deskTile.message // "" | tostring) else null end)}
+  ' "$manifest" 2>/dev/null
+done | jq -cs 'unique_by(.id) | sort_by(.name | ascii_downcase)'

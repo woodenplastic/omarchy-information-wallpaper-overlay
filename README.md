@@ -1,14 +1,22 @@
-# GitHub Desk
+# Information Wallpaper Overlay
 
-**Your repos on your desktop.** GitHub Desk tiles up to four GitHub repos,
-public or private, on the desktop, the way Hyprland tiles windows. Each tile
-shows how the repo is doing at a glance: its numbers, its latest Actions runs,
-four weeks of commit activity and its recent commits.
+**Information on your wallpaper.** Up to six tiles on the desktop, laid out
+the way Hyprland tiles windows, each one showing something you'd otherwise
+need an app open for:
+
+- **A GitHub repo**, public or private: its numbers, its Actions runs, a year
+  of commits and its recent commits.
+- **herdr's agents:** which coding agents are working, which are waiting for
+  you, and what each one is on.
+- **Tasks:** builds, flashing, updates and copies running on the machine,
+  and whether they passed.
+- **Now playing:** the cover, title, artist and how far into the track.
+- **Any installed plugin:** its menu, live, or its own `DeskTile.qml`.
 
 The tiles sit between the wallpaper and your windows, so you see them on an
 empty workspace or in the gaps between windows. They never take a click.
 
-## What each tile shows
+## A repo tile
 
 - **A year of commits** as a heatmap, one column per week like on GitHub, with
   month names, Mon/Wed/Fri and a Less–More legend. Today's cell has a frame
@@ -43,20 +51,130 @@ tile: one repo on the whole screen gets big cells and large type.
 - The tiles have no border and reach the screen edges. Between tiles is
   Hyprland's gap, and their corners follow its rounding; with rounding off, the
   heatmap cells are square too.
-- One repo fills the screen, two sit side by side, three are one large tile
-  beside two stacked ones, and four make a 2×2 grid. On a portrait monitor the
+- One tile fills the screen, two sit side by side, three are one large tile
+  beside two stacked ones, four make a 2×2 grid, five are one tall tile
+  beside a 2×2 grid, and six make a 3×2 grid. On a portrait monitor the
   splits turn.
+
+## The agents tile
+
+For [herdr](https://herdr.dev) users. The tile asks herdr every two seconds
+which agents run in which workspace and what they're doing:
+
+- **The counts:** how many agents are waiting for you, working, done and
+  idle.
+- **Each workspace** with its agents: the state as a dot, the agent (claude,
+  codex, …), what it's on (its terminal title), its folder, and how long it's
+  been in that state. The focused workspace is in the accent color.
+- **Waiting for you** (an agent that asks for permission or input) shows in
+  red and pulses; working agents pulse in yellow; done is green.
+
+When the agents don't all fit, idle ones are left out first and the rest is
+counted at the bottom. Without herdr, or with its server stopped, the tile
+says so.
+
+## The tasks tile
+
+Long tasks, wherever they were started: in a terminal, by an agent, from an
+editor. Every two seconds the tile looks for known tools among the running
+processes and shows each one that has run five seconds:
+
+- **Builds:** `idf.py`, `cmake --build`, `make`, `ninja`, `meson`, `cargo`,
+  `gradle`, `mvn`, `go build`, `npm`/`pnpm`/`yarn`/`bun` scripts and installs,
+  `tsc`, `vite build`, `next build`, `docker`/`podman build`, `kicad-cli`,
+  `pio run`, `arduino-cli`
+- **Flashing:** `esptool`, `idf.py flash`, `dfu-util`
+- **Updates and installs:** `pacman -S/-U/-R`, `yay`, `paru`, `makepkg`,
+  `flatpak`, `pip install`, `uv`
+- **Copies:** `rsync`, `dd`, `ffmpeg`, `tar`, `zstd`, `xz`, `7z`,
+  `git clone/fetch/pull/push`
+
+Commands that keep running on purpose (`dev`, `serve`, `watch`, `monitor`,
+…) are left out. A row shows the task (`idf.py build`, `npm tauri build`),
+its project folder, the agent that started it, and while it runs, its busy
+jobs, CPU and time; a build's compilers count as its jobs, not as tasks of
+their own. **Also watch** in the settings adds your own programs by name.
+
+The last 20 tasks that ended stay below the running ones, newest first,
+and are kept in `~/.local/state/information-wallpaper-overlay/tasks.json`
+across restarts: green when it passed, red when it
+failed, grey when it was cancelled or it isn't known. A process started
+elsewhere doesn't tell how it ended, so that comes from a small hook for
+bash: **Pass or fail for terminal commands** adds one line to `~/.bashrc`,
+and new terminals note how each command that ran five seconds or longer
+ended, to `$XDG_RUNTIME_DIR/information-wallpaper-overlay/`. It works along
+with starship and starts no process of its own. Tasks agents start run
+outside those terminals, so they end grey; the agents tile tells how the
+agents are doing.
+
+## Plugin tiles
+
+**Installed plugin** in a slot's dropdown puts another shell plugin on the
+desk: Activity Monitor, Network, NVIDIA, Tailscale, Bluetooth, anything
+installed with a bar widget. The plugin doesn't need to know about it.
+
+The tile makes its own copy of the plugin's bar widget and tells it its menu
+is open, so the plugin gathers its data as it does for the bar. The menu's
+window never shows and never takes the keyboard; what the menu holds moves
+into the tile instead, laid out as the plugin lays it out and scaled to fit.
+The copy works only while the tile can be seen, gets the bar's look and the
+shell's services but none of its popups, and leaves the plugin's IPC to the
+real widget. The tile only shows the menu: nothing in it takes a click, a
+key or the keyboard focus, on the desktop or on the lock screen, where
+plugin tiles work too (with the look but not the bar's services, since
+there is no bar). A menu's rows that could end a process or switch a
+network can't be reached from the locked screen.
+
+This works for plugins built on the shell's `Panel` and `KeyboardPanel`,
+which most are; others say so in the tile. It leans on those two, so a shell
+update that changes them may need an update here.
+
+### For plugin authors: `DeskTile.qml`
+
+A plugin can draw its own tile instead: put a `DeskTile.qml` next to its
+`manifest.json`. The tile loads it into its padding (on the theme's
+background with the accent glow, like every tile) and sets these, where the
+file declares them:
+
+- `property bool live`: the tile can be seen; gather data only while it's
+  true. The tile never takes input, so a `DeskTile.qml` only shows.
+- `property bool animate`: animations are on and the desk is in view.
+- `property QtObject bar`: the bar's colors, fonts and `shell` services
+  (`bar.shell.firstPartyServiceFor(...)`), without popups.
+- `property var settings`: the plugin's own entry in `shell.json`.
+
+It fills the tile's area, so it should lay itself out for any size; the
+shell's `Style` and `Color` (`qs.Commons`) give the theme. A plugin with a
+`DeskTile.qml` shows that in the tile instead of its menu.
+
+A plugin with nothing worth a tile, say one that is all settings or only
+makes sense on the bar, can say so in its `manifest.json`:
+
+```json
+"deskTile": { "supported": false, "message": "Workspace Icons belongs on the bar." }
+```
+
+It's then left out of the slots' plugin list, and a slot that already shows
+it shows the message instead of the menu.
+
+## The music tile
+
+What the bar's media widget shows: the player playing (Spotify, a browser,
+mpv, anything with MPRIS), with the cover, title, artist, album, the player's
+name, and a bar with the time. In a tall tile the cover sits above the text.
+Paused, the cover dims; with nothing playing, the tile says so.
 
 ## The icon
 
-The GitHub icon sits in the tray, behind its arrow, and carries a small
+The icon, four tiles, sits in the tray behind its arrow and carries a small
 status dot for all repos together:
 
 - green when every workflow's latest run passed
 - red when any workflow's latest run failed
 - yellow while a workflow runs
 
-Click it for the settings. Turn off **Show in the tray** to put the icon on
+Its tooltip also says when agents are waiting for you. Click it for the
+settings. Turn off **Show in the tray** to put the icon on
 the bar instead, where it pulses while a workflow runs and a middle-click
 refreshes right away.
 
@@ -64,20 +182,55 @@ refreshes right away.
 
 The popup holds everything:
 
-- **Repositories:** up to four. Start typing and it suggests your own repos
-  and your organizations' repos, most recently pushed first. Pick one with the
-  mouse, or with the arrow keys and Enter. You can also type any `owner/repo`
-  or paste a GitHub URL. The branch field is optional; left empty, the tile
-  shows the default branch.
+- **Slots:** six, one row each. A dropdown picks what the slot shows:
+  **GitHub repository**, **herdr agents**, **Tasks**, **Now playing**,
+  **Installed plugin** (then which one) or **Empty**, and any of them in
+  as many slots as you like. A repository gets
+  its field beside the dropdown: start typing and it suggests your own repos
+  and your organizations' repos, most recently pushed first; pick one with
+  the mouse, or with the arrow keys and Enter, or type any `owner/repo` or
+  paste a GitHub URL. The branch field under it is optional; left empty, the
+  tile shows the default branch. Tasks get **Also watch** for your own
+  programs (tasks tiles share one watcher, which watches all their lists),
+  and the bash hook for pass or fail.
+- **The layout** above the slots shows where each filled slot lands. Empty
+  slots are skipped, so the filled ones share the desk in slot order; with
+  three, the first is the large one.
 - **Opacity** of the tiles.
-- **Animations:** the twinkling cells and today's breathing frame.
+- **Animations:** the twinkling cells, today's breathing frame and the
+  pulsing agents.
 - **Show in the tray:** the icon behind the tray's arrow, or on the bar.
+- **Lock screen:** the tiles on the lock screen too (see below); each
+  slot's lock button keeps that tile off it.
+
+## On the lock screen
+
+With the [Lock Screen Explorer](https://github.com/SirJul1337/omarchy-lock-explorer)
+plugin installed, the popup gets a **Lock screen** section. **On the lock
+screen** adds the overlay as one of the explorer's designs and makes it
+the lock screen: the tiles fill the screen as on the desktop, with a card in
+the middle for the clock, the date, the CI status, agents waiting for you and
+the password field.
+Turning it off removes the design, and the explorer goes back to its
+default. You can also pick it in the explorer, where it's called
+"InformationWallpaperOverlay" under Custom.
+
+The lock screen shows what the desktop shows, from the same cache; the bar
+widget keeps fetching while the screen is locked. Anyone at the locked
+screen can read it, so each slot has a lock button beside it in the popup:
+locked, that tile stays off the lock screen, and the others share its room
+there. A private repo or your agents' work can stay on the desktop only.
+
+The design is `lock/LockDesign.qml` in the plugin.
+`~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml` only points at it, so plugin
+updates reach the lock screen without adding it again.
 
 ## Requirements
 
 - The [GitHub CLI](https://cli.github.com/) (`gh`), logged in with
-  `gh auth login`. GitHub Desk uses that login, so private repos work without a
-  token to set up.
+  `gh auth login`, for repo tiles. The overlay uses that login, so private
+  repos work without a token to set up.
+- [herdr](https://herdr.dev), for the agents tile.
 - `jq`, `curl` and the system Python's PyGObject (for the tray icon), which
   Omarchy already has.
 
@@ -91,8 +244,11 @@ them ready, which only covers the default branch. Otherwise it's counted from
 the history once and then brought up to date with just the newest commits;
 a very busy repo takes a while the first time.
 
+The agents tile asks herdr every two seconds, and the music tile follows the
+player as it plays.
+
 The last fetch and the owners' avatars are kept in
-`~/.cache/omarchy-github-desk/`, readable only by you, so the tiles come back
+`~/.cache/information-wallpaper-overlay/`, readable only by you, so the tiles come back
 immediately after a restart.
 
 ## Install
@@ -101,7 +257,7 @@ immediately after a restart.
 omarchy plugin add https://github.com/woodenplastic/omarchy-github-desk.git --enable
 ```
 
-Then click the GitHub icon (behind the tray's arrow) and add your repos.
+Then click the four-tiles icon (behind the tray's arrow) and add your tiles.
 
 The tiles only appear on the first monitor, drawn by the widget there. If
 you remove the widget from the bar, the tiles go with it.
@@ -109,9 +265,14 @@ you remove the widget from the bar, the tiles go with it.
 ## Remove
 
 ```bash
-omarchy plugin remove woodenplastic.github-desk
-rm -rf ~/.cache/omarchy-github-desk
+omarchy plugin remove woodenplastic.information-wallpaper-overlay
+rm -rf ~/.cache/information-wallpaper-overlay
 ```
+
+If it's on the lock screen, turn that off in the popup first, or remove
+`~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml` afterwards.
+Turn off **Pass or fail for terminal commands** too, or delete its marked
+line from `~/.bashrc`; while the plugin is gone the line does nothing.
 
 The first line removes the plugin and its settings; the second deletes the
 cached repo data and avatars.
@@ -123,10 +284,22 @@ cached repo data and avatars.
   from `avatars.githubusercontent.com`.
 - **Files:** writes its settings to `~/.config/omarchy/shell.json` through
   Omarchy's `omarchy-shell-config` helper, only when you change them in the
-  popup, and its cache to `~/.cache/omarchy-github-desk/`. The tray icons are
-  drawn into `$XDG_RUNTIME_DIR/omarchy-github-desk-icons/`.
-- **Commands:** `gh`, `jq`, `curl`, and `hyprctl` to read gaps and rounding
+  popup, and its cache to `~/.cache/information-wallpaper-overlay/`. With the
+  lock screen turned on, it writes
+  `~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml`
+  and talks to Lock Screen Explorer through `omarchy-shell lock`. With
+  **Pass or fail for terminal commands** on, it adds one marked line to
+  `~/.bashrc`, and turning it off takes that line out again. The tray icons are
+  drawn into `$XDG_RUNTIME_DIR/information-wallpaper-overlay-icons/`. The
+  tasks tile keeps its last tasks in
+  `~/.local/state/information-wallpaper-overlay/tasks.json`.
+- **Processes:** the tasks tile reads command lines, times and CPU from
+  `/proc`; it never touches the processes.
+- **Commands:** `gh`, `jq`, `curl`, `herdr agent list` and
+  `herdr workspace list` (read only), and `hyprctl` to read gaps and rounding
   and the cursor position when the tray icon is clicked.
+- **Media:** reads the playing track through the shell's media service
+  (MPRIS); it never controls the player.
 - No root, no tokens of its own, no telemetry.
 
 ## Credits

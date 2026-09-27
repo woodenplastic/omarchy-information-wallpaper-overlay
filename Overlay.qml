@@ -6,8 +6,9 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// GitHub Desk: the bar icon with the CI status dot, the settings popup, and
-// the repo tiles on the desktop (Desk.qml).
+// Information Wallpaper Overlay: the bar icon with the CI status dot, the
+// settings popup, and the tiles on the desktop (Desk.qml): GitHub repos,
+// herdr's agents, what's playing and the long tasks on the machine.
 //
 // The bar has one instance of this widget per monitor. The one on the first
 // monitor fetches (scripts/fetch through the gh CLI) and draws the desk; the
@@ -15,7 +16,7 @@ import "Model.js" as Model
 // agrees and the desk shows the last data right after a shell restart.
 BarWidget {
   id: root
-  moduleName: "woodenplastic.github-desk"
+  moduleName: "woodenplastic.information-wallpaper-overlay"
 
   // ---- Settings. shell.json is the source: the widget reads its own entry
   //      from the file, since the shell's hand-over can lag behind changes
@@ -34,21 +35,16 @@ BarWidget {
     onLoaded: root.readShellConfig(text())
   }
 
+  // Plugin tiles leave out the menus' buttons, dropdowns and fields.
+  readonly property bool hidePluginControls: option("hidePluginControls", true) === true
+
+  // The whole file too, for the settings of plugins shown in tiles.
+  property string shellConfigText: ""
+
   function readShellConfig(text) {
-    var config
-    try { config = JSON.parse(text) } catch (e) { return }
-    var layout = config && config.bar && config.bar.layout ? config.bar.layout : {}
-    for (var section in layout) {
-      var entries = Array.isArray(layout[section]) ? layout[section] : []
-      for (var i = 0; i < entries.length; i++) {
-        var entry = entries[i]
-        if (!entry || entry.id !== root.moduleName) continue
-        var next = {}
-        for (var k in entry) if (k !== "id") next[k] = entry[k]
-        if (JSON.stringify(next) !== JSON.stringify(root.fileSettings)) root.fileSettings = next
-        return
-      }
-    }
+    root.shellConfigText = text
+    var next = Model.barEntry(text, root.moduleName)
+    if (next && JSON.stringify(next) !== JSON.stringify(root.fileSettings)) root.fileSettings = next
   }
 
   function option(name, fallback) {
@@ -56,8 +52,14 @@ BarWidget {
     return value === undefined || value === null ? fallback : value
   }
 
-  readonly property var repos: Model.repoList(option("repos", []))
-  readonly property real tileOpacity: Util.clamp(Number(option("opacity", 0.2)), 0, 1)
+  // The six slots as set in the popup, and the filled ones, which the desk shows.
+  readonly property var slots: Model.slotList(option("tiles", []))
+  readonly property var tiles: Model.tileList(option("tiles", []))
+  readonly property var repos: Model.reposOf(tiles)
+  // Set while the settings slider is dragged, so the tiles follow it before
+  // the value is saved; NaN otherwise.
+  property real previewOpacity: NaN
+  readonly property real tileOpacity: Util.clamp(Number(isNaN(previewOpacity) ? option("opacity", 0.2) : previewOpacity), 0, 1)
   readonly property bool animations: option("animations", true) === true
   // The icon behind the tray's arrow instead of on the bar.
   readonly property bool inTray: option("inTray", true) === true
@@ -105,7 +107,7 @@ BarWidget {
 
   // ---- Data.
 
-  readonly property string cacheDir: (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/omarchy-github-desk"
+  readonly property string cacheDir: (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/information-wallpaper-overlay"
   readonly property string cachePath: cacheDir + "/data.json"
 
   property var results: []
@@ -168,36 +170,108 @@ BarWidget {
   //      after the desk sees it end. Only runs seen running count, so a
   //      restart doesn't bring back ones that are long over.
 
-  readonly property int holdMs: 60000
-  // run id -> { running: true } while running, { endedMs } once seen ending.
   property var runsSeen: ({})
 
   function trackRuns() {
-    var next = {}
-    for (var i = 0; i < root.results.length; i++) {
-      var runs = root.results[i] && root.results[i].runs ? root.results[i].runs : []
-      for (var j = 0; j < runs.length; j++) {
-        var run = runs[j]
-        var before = root.runsSeen[run.id]
-        if (run.status !== "completed") next[run.id] = { running: true }
-        else if (before && before.running) next[run.id] = { endedMs: Date.now() }
-        else if (before && before.endedMs) next[run.id] = before
-      }
-    }
-    root.runsSeen = next
+    root.runsSeen = Model.trackRuns(root.results, root.runsSeen, Date.now())
   }
 
   function liveRuns(result) {
-    var runs = result && result.ok && result.runs ? result.runs : []
-    var out = []
-    for (var i = 0; i < runs.length; i++) {
-      var seen = root.runsSeen[runs[i].id]
-      if (runs[i].status !== "completed" || (seen && seen.endedMs && root.nowMs - seen.endedMs < root.holdMs)) out.push(runs[i])
-    }
-    return out
+    return Model.liveRuns(result, root.runsSeen, root.nowMs)
   }
 
   readonly property bool anyLive: shownResults.some(function(r) { return root.liveRuns(r).length > 0 })
+
+  // ---- herdr's agents, for an agents tile.
+
+  HerdrFeed {
+    id: herdrFeed
+    active: root.isPrimary && Model.hasKind(root.tiles, "herdr")
+  }
+
+  readonly property var herdr: herdrFeed
+
+  // ---- Long tasks, for a tasks tile (scripts/tasks), and the shell hook
+  //      that tells whether terminal commands passed (scripts/shell-hook):
+  //      "on", "off", "" until asked. Asked again when the popup opens.
+
+  TasksFeed {
+    id: tasksWatcher
+    active: root.isPrimary && Model.hasKind(root.tiles, "tasks")
+    tools: Model.taskTools(root.tiles)
+  }
+
+  readonly property var tasksFeed: tasksWatcher
+
+  property string shellHook: ""
+
+  function refreshShellHook() {
+    if (shellHookProc.running) return
+    shellHookProc.command = ["bash", root.pluginDir + "/scripts/shell-hook", "status"]
+    shellHookProc.running = true
+  }
+
+  function setShellHook(on) {
+    if (shellHookProc.running) return
+    shellHookProc.command = ["bash", root.pluginDir + "/scripts/shell-hook", on ? "on" : "off"]
+    shellHookProc.running = true
+  }
+
+  Process {
+    id: shellHookProc
+    stdout: StdioCollector { id: shellHookOut; waitForEnd: true }
+    onExited: {
+      if (command[2] === "status") root.shellHook = String(shellHookOut.text || "").trim()
+      else Qt.callLater(root.refreshShellHook)
+    }
+  }
+
+  // ---- Installed plugins, for plugin tiles (PluginTile, scripts/plugins):
+  //      listed at the start and when the popup opens.
+
+  property var installedPlugins: []
+
+  function refreshPlugins() {
+    if (pluginsProc.running) return
+    pluginsProc.command = ["bash", root.pluginDir + "/scripts/plugins"]
+    pluginsProc.running = true
+  }
+
+  Process {
+    id: pluginsProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var list
+        try { list = JSON.parse(text) } catch (e) { return }
+        if (Array.isArray(list) && JSON.stringify(list) !== JSON.stringify(root.installedPlugins)) root.installedPlugins = list
+      }
+    }
+  }
+
+  function pluginInfo(id) {
+    for (var i = 0; i < root.installedPlugins.length; i++) if (root.installedPlugins[i].id === id) return root.installedPlugins[i]
+    return null
+  }
+
+  // A plugin's own entry on the bar in shell.json, as it gets it there.
+  function pluginSettings(id) {
+    return Model.barEntry(root.shellConfigText, id) || ({})
+  }
+
+  // The bar plugins in tiles get: the real one's look, none of its popups.
+  DeskBar {
+    id: deskBarObject
+    real: root.bar
+  }
+
+  readonly property var deskBar: deskBarObject
+
+  // ---- What's playing, for a music tile: the shell's media service, so the
+  //      tile shows the player the bar's media widget shows.
+
+  readonly property var mediaService: root.bar && root.bar.shell && typeof root.bar.shell.firstPartyServiceFor === "function"
+    ? root.bar.shell.firstPartyServiceFor("omarchy.media") : null
 
   // ---- The repos the gh login can pick from (own and organizations'), for
   //      the settings popup's suggestions. Listed again when the popup opens
@@ -230,6 +304,41 @@ BarWidget {
       root.repoChoices = data.repos
       var t = Date.parse(data.fetched)
       root.choicesFetchedMs = isFinite(t) ? t : 0
+    }
+  }
+
+  // ---- On the lock screen, as a Lock Screen Explorer design
+  //      (scripts/lock-design): "on", "off", "missing" without the explorer,
+  //      "" until asked. Asked again when the popup opens.
+
+  property string lockDesign: ""
+  property string lockDesignError: ""
+  readonly property bool lockDesignBusy: lockDesignProc.running
+
+  function refreshLockDesign() {
+    if (lockDesignProc.running) return
+    lockDesignProc.command = ["bash", root.pluginDir + "/scripts/lock-design", "status"]
+    lockDesignProc.running = true
+  }
+
+  function setLockDesign(on) {
+    if (lockDesignProc.running) return
+    root.lockDesignError = ""
+    lockDesignProc.command = ["bash", root.pluginDir + "/scripts/lock-design", on ? "on" : "off"]
+    lockDesignProc.running = true
+  }
+
+  Process {
+    id: lockDesignProc
+    stdout: StdioCollector { id: lockDesignOut; waitForEnd: true }
+    stderr: StdioCollector { id: lockDesignErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (command[2] === "status") {
+        root.lockDesign = String(lockDesignOut.text || "").trim()
+        return
+      }
+      if (exitCode !== 0) root.lockDesignError = String(lockDesignErr.text || "").trim() || "Couldn't change the lock screen"
+      Qt.callLater(root.refreshLockDesign)
     }
   }
 
@@ -296,20 +405,11 @@ BarWidget {
     }
   }
 
-  function firstNumber(option, fallback) {
-    if (!option) return fallback
-    if (option.int !== undefined) return Number(option.int)
-    var n = parseInt(String(option.css || option.custom || "").trim().split(/\s+/)[0], 10)
-    return isFinite(n) ? n : fallback
-  }
-
   function readHyprOptions(raw) {
-    var list
-    try { list = JSON.parse(raw) } catch (e) { return }
-    var byName = {}
-    for (var i = 0; i < list.length; i++) if (list[i] && list[i].option) byName[list[i].option] = list[i]
-    root.gapsIn = firstNumber(byName["general:gaps_in"], 5)
-    root.rounding = firstNumber(byName["decoration:rounding"], 0)
+    var look = Model.hyprLook(raw)
+    if (!look) return
+    root.gapsIn = look.gapsIn
+    root.rounding = look.rounding
   }
 
   function refreshLook() {
@@ -340,6 +440,7 @@ BarWidget {
 
   Component.onCompleted: {
     refreshLook()
+    refreshPlugins()
     refetchSoon.restart()
   }
 
@@ -353,7 +454,7 @@ BarWidget {
   // ---- Desk: the tiles on the first monitor's desktop.
 
   Loader {
-    active: root.isPrimary && root.repos.length > 0
+    active: root.isPrimary && root.tiles.length > 0
     source: Qt.resolvedUrl("Desk.qml")
     onLoaded: item.widget = root
   }
@@ -492,12 +593,26 @@ BarWidget {
     : ciState === "running" ? runningColor
     : successColor
 
-  readonly property string statusText: {
-    if (root.repos.length === 0) return "no repos yet"
+  readonly property string ciText: {
     if (root.ciState === "failure") return "a workflow failed"
     if (root.ciState === "running") return "workflows running"
     if (root.ciState === "success") return "all workflows passing"
-    return root.repos.length === 1 ? "1 repo" : root.repos.length + " repos"
+    return ""
+  }
+
+  readonly property int agentsWaiting: herdrFeed.active ? herdrFeed.counts.blocked : 0
+  readonly property int tasksFailed: tasksWatcher.active ? tasksWatcher.counts.failure : 0
+
+  readonly property string statusText: {
+    if (root.tiles.length === 0) return "no tiles yet"
+    var parts = [
+      root.ciText,
+      root.agentsWaiting === 0 ? "" : root.agentsWaiting === 1 ? "an agent is waiting" : root.agentsWaiting + " agents waiting",
+      root.tasksFailed === 0 ? "" : root.tasksFailed === 1 ? "a task failed" : root.tasksFailed + " tasks failed"
+    ]
+    parts = parts.filter(function(s) { return s })
+    if (parts.length > 0) return parts.join(", ")
+    return root.tiles.length === 1 ? "1 tile" : root.tiles.length + " tiles"
   }
 
   BarIconButton {
@@ -505,8 +620,8 @@ BarWidget {
     visible: !root.inTray
     anchors.fill: parent
     bar: root.bar
-    text: ""
-    tooltipText: root.opened ? "" : "GitHub Desk: " + root.statusText
+    text: "\uf009"
+    tooltipText: root.opened ? "" : "Information Wallpaper Overlay: " + root.statusText
     onPressed: function(b) {
       if (b === Qt.MiddleButton) root.fetch()
       else root.toggleHere()

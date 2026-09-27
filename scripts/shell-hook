@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Puts the shell hook (shell-hook.bash) in ~/.bashrc, or takes it out, so
+# tasks started in a terminal show whether they passed.
+#
+#   shell-hook status   on or off
+#   shell-hook on       adds the line to ~/.bashrc; new terminals have it
+#   shell-hook off      removes it
+
+set -uo pipefail
+
+RC="$HOME/.bashrc"
+MARK="# information-wallpaper-overlay: exit status of long commands"
+HOOK="$(cd "$(dirname "$0")" && pwd)/shell-hook.bash"
+# Through ~, so the line keeps working for the same user and plugin folder.
+LINE="[[ -r ${HOOK/#$HOME/\~} ]] && source ${HOOK/#$HOME/\~} $MARK"
+
+case "${1:-}" in
+status)
+  grep -qF "$MARK" "$RC" 2>/dev/null && echo on || echo off
+  ;;
+on)
+  grep -qF "$MARK" "$RC" 2>/dev/null && exit 0
+  printf '\n%s\n' "$LINE" >>"$RC"
+  ;;
+off)
+  [[ -f $RC ]] || exit 0
+  tmp=$(mktemp "$RC.XXXXXX") || exit 1
+  grep -vF "$MARK" "$RC" >"$tmp"
+  # Keeps the file's mode, and ~/.bashrc itself if it's a link.
+  cat "$tmp" >"$RC"
+  rm -f "$tmp"
+  ;;
+*)
+  echo "usage: shell-hook status|on|off" >&2
+  exit 1
+  ;;
+esac

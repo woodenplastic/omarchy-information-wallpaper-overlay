@@ -1,0 +1,71 @@
+#!/bin/bash
+
+# Puts Information Wallpaper Overlay on the lock screen as a design of the Lock Screen Explorer
+# plugin, or takes it off again. The design itself is lock/LockDesign.qml;
+# the file in ~/.config/omarchy/lock-designs only points at it, so plugin
+# updates reach the lock screen without writing it again.
+#
+#   lock-design status   on, off, or missing (Lock Screen Explorer isn't installed)
+#   lock-design on       adds the design and makes it the lock screen
+#   lock-design off      removes it; the lock screen goes back to the explorer's default
+
+set -uo pipefail
+
+PLUGINS="$HOME/.config/omarchy/plugins"
+EXPLORER="$PLUGINS/io.github.sirjul1337.lock-explorer"
+DESIGNS="$HOME/.config/omarchy/lock-designs"
+FILE="$DESIGNS/InformationWallpaperOverlay.qml"
+# The explorer names a custom design after its file.
+ID="my-informationwallpaperoverlay"
+PLUGIN_NAME=$(basename "$(cd "$(dirname "$0")/.." && pwd)")
+
+lock() {
+  omarchy-shell lock "$@" 2>/dev/null | tr -d '"[:space:]'
+}
+
+case "${1:-}" in
+status)
+  if [[ ! -d $EXPLORER ]]; then
+    echo missing
+  elif [[ -f $FILE && $(lock design) == "$ID" ]]; then
+    echo on
+  else
+    echo off
+  fi
+  ;;
+on)
+  if [[ ! -d $EXPLORER ]]; then
+    echo "Lock Screen Explorer isn't installed" >&2
+    exit 1
+  fi
+  mkdir -p "$DESIGNS"
+  cat >"$FILE" <<EOF
+// Information Wallpaper Overlay on the lock screen, added from its settings. The design lives
+// in the plugin; this file only points at it.
+import QtQuick
+import "../plugins/$PLUGIN_NAME/lock"
+
+LockDesign {}
+EOF
+  lock rescanDesigns >/dev/null
+  # The scan runs in the background; the design is there once it's done.
+  for _ in {1..20}; do
+    [[ $(lock setDesign "$ID") == ok ]] && exit 0
+    sleep 0.25
+  done
+  echo "Lock Screen Explorer didn't pick up the design; is it enabled?" >&2
+  exit 1
+  ;;
+off)
+  [[ -f $FILE ]] || exit 0
+  # The explorer switches to its default first when the design is in use.
+  if [[ $(lock deleteDesign "$ID") != ok ]]; then
+    rm -f "$FILE"
+    lock rescanDesigns >/dev/null
+  fi
+  ;;
+*)
+  echo "usage: lock-design status|on|off" >&2
+  exit 1
+  ;;
+esac

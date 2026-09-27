@@ -1,0 +1,344 @@
+#!/usr/bin/python3
+"""Watches for long tasks for the tasks tile: builds, flashing, updates,
+copies. Every two seconds it looks through /proc for known tools, and prints
+one JSON line on stdout:
+
+  {"tasks": [{"id", "label", "folder", "by", "state", "elapsed", "ago",
+              "cpu", "jobs"}]}
+
+A task is the topmost matching process; what runs under it (compilers,
+linkers) counts as its jobs. It shows once it's run five seconds. The last
+tasks that ended stay in the list, and are kept in
+$XDG_STATE_HOME/information-wallpaper-overlay/tasks.json across restarts. Whether it passed comes from the shell hook
+(scripts/shell-hook.bash), which notes the exit status of terminal commands;
+without a record the task is just "done". state: running, success, failure,
+cancelled or done.
+
+  tasks [extra-tool ...]
+
+Extra tools match by their program name. The watcher exits when stdin
+closes, with the shell."""
+
+import json
+import os
+import re
+import select
+import sys
+import time
+
+TICK = 2.0
+MIN_AGE = 5
+HISTORY_S = 30 * 60
+HISTORY_MAX = 20
+# How long after a task ends its exit status can still arrive.
+STATUS_WAIT_S = 30
+
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "information-wallpaper-overlay")
+COMMANDS = os.path.join(RUNTIME, "commands.jsonl")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "information-wallpaper-overlay")
+HISTORY = os.path.join(STATE, "tasks.json")
+KEPT = ("id", "label", "folder", "by", "started", "ended", "state")
+
+CLK = os.sysconf("SC_CLK_TCK")
+INTERPRETERS = {"python", "python3", "node", "bun", "deno", "sh", "bash", "perl", "ruby"}
+AGENTS = {"claude", "codex", "opencode", "copilot", "gemini", "cursor-agent", "aider", "crush", "pi", "goose", "amp"}
+# Arguments that mean a program keeps running on purpose, not a task.
+ONGOING = {"dev", "serve", "watch", "monitor", "start", "preview", "run-dev", "menuconfig", "repl", "shell"}
+
+
+def base(path):
+    return os.path.basename(path or "")
+
+
+def positional(args):
+    return [a for a in args if a and not a.startswith("-") and "/" not in a and "=" not in a and a.strip(".")]
+
+
+# tool -> the subcommands that make it a task (None: any), and whether the
+# first one goes in the label. Paths and file names never do.
+RULES = {
+    "idf.py": (None, True), "esptool": (None, True), "esptool.py": (None, True),
+    "make": (None, False), "ninja": (None, False), "cmake": ("--build", False), "meson": ({"compile", "setup"}, True),
+    "cargo": ({"build", "b", "test", "t", "check", "c", "clippy", "install", "doc", "bench", "tauri"}, True),
+    "gradle": (None, True), "gradlew": (None, True), "mvn": (None, True),
+    "go": ({"build", "test", "install", "generate"}, True),
+    "npm": ({"run", "install", "i", "ci", "test", "exec"}, True), "pnpm": (None, True), "yarn": (None, True), "bun": ({"run", "install", "i", "test", "build"}, True),
+    "tsc": (None, False), "vite": ({"build"}, True), "webpack": (None, False), "next": ({"build"}, True),
+    "docker": ({"build", "pull", "push", "buildx", "compose"}, True), "podman": ({"build", "pull", "push"}, True),
+    "pacman": ("-S -U -R", False), "yay": (None, False), "paru": (None, False), "makepkg": (None, False),
+    "flatpak": ({"install", "update", "upgrade", "uninstall"}, True),
+    "pip": ({"install"}, True), "uv": ({"sync", "pip", "tool"}, True),
+    "pytest": (None, False), "kicad-cli": (None, True), "freerouting": (None, False),
+    "pio": ({"run"}, True), "platformio": ({"run"}, True), "arduino-cli": ({"compile", "upload"}, True), "dfu-util": (None, False),
+    "rsync": (None, False), "dd": (None, False), "ffmpeg": (None, False), "tar": (None, False), "zstd": (None, False), "xz": (None, False), "7z": (None, False),
+    "git": ({"clone", "fetch", "pull", "push", "gc", "lfs"}, True),
+}
+
+
+def match(argv, extra):
+    """The label of a task for a command line, or None."""
+    if not argv:
+        return None
+    tool, args = base(argv[0]), argv[1:]
+    if tool.startswith("python") and len(args) >= 2 and args[0] == "-m":
+        tool, args = args[1], args[2:]
+    elif tool in INTERPRETERS or tool.startswith("python"):
+        scripts = [a for a in args if not a.startswith("-")]
+        if not scripts:
+            return None
+        i = args.index(scripts[0])
+        tool, args = base(scripts[0]), args[i + 1:]
+    tool = re.sub(r"\.js$|-cli\.js$", "", tool)
+    if tool == "npm-cli":
+        tool = "npm"
+    words = positional(args)
+    if ONGOING.intersection(w.lower() for w in words):
+        return None
+    if tool in extra:
+        return " ".join([tool] + words[:1])
+    rule = RULES.get(tool)
+    if rule is None:
+        return None
+    subs, labelled = rule
+    if tool == "cmake":
+        return "cmake --build" if "--build" in args else None
+    if tool == "pacman":
+        ops = [a for a in args if re.match(r"^-[A-Za-z]*[SUR]", a) and not a.startswith("--")]
+        return "pacman " + ops[0] if ops and not re.match(r"^-[A-Za-z]*[Qs]", ops[0]) else None
+    if tool in ("yay", "paru") and any(a.startswith("-Q") or a.startswith("-G") for a in args):
+        return None
+    if subs is not None and not (words and words[0] in subs):
+        return None
+    if tool in ("npm", "pnpm", "yarn", "bun") and words[:1] == ["run"]:
+        words = words[1:]
+    # Two words where the second says what: "idf.py build flash",
+    # "npm tauri build", "docker compose build".
+    two = tool in ("idf.py", "npm", "pnpm", "yarn", "bun", "docker")
+    return " ".join([tool] + (words[:2] if two else words[:1] if labelled else []))
+
+
+BOOT = 0.0
+with open("/proc/stat") as f:
+    for line in f:
+        if line.startswith("btime "):
+            BOOT = float(line.split()[1])
+
+# pid -> ((starttime, name), argv); each command line is read once. The name
+# changes with exec and a new title, which keep the start time.
+argv_cache = {}
+
+
+def scan():
+    """pid -> {ppid, start (epoch), ticks, argv} for every process."""
+    procs = {}
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        try:
+            with open("/proc/%d/stat" % pid) as f:
+                stat = f.read()
+        except OSError:
+            continue
+        comm = stat[stat.find("(") + 1:stat.rfind(")")]
+        rest = stat[stat.rfind(")") + 2:].split()
+        ppid, ticks, start = int(rest[1]), int(rest[11]) + int(rest[12]), int(rest[19])
+        cached = argv_cache.get(pid)
+        if cached and cached[0] == (start, comm):
+            argv = cached[1]
+        else:
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    argv = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+            except OSError:
+                argv = []
+            # Programs that set their title (npm, node) leave one string with
+            # spaces in it: "npm run tauri build".
+            if len(argv) == 1 and " " in argv[0]:
+                argv = argv[0].split()
+            argv_cache[pid] = ((start, comm), argv)
+        procs[pid] = {"ppid": ppid, "start": BOOT + start / CLK, "ticks": ticks, "argv": argv}
+    for pid in list(argv_cache):
+        if pid not in procs:
+            del argv_cache[pid]
+    return procs
+
+
+def ancestors(pid, procs):
+    out = []
+    p = procs.get(pid)
+    while p and p["ppid"] > 1 and len(out) < 12:
+        out.append(p["ppid"])
+        p = procs.get(p["ppid"])
+    return out
+
+
+def cwd_of(pid):
+    try:
+        return os.readlink("/proc/%d/cwd" % pid)
+    except OSError:
+        return ""
+
+
+def read_commands(now):
+    """The exit statuses the shell hook wrote in the last half hour; the file
+    is cut back to those now and then."""
+    try:
+        with open(COMMANDS) as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if now - r.get("end", 0) < HISTORY_S:
+            out.append(r)
+    if len(lines) > 200:
+        tmp = COMMANDS + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.writelines(json.dumps(r) + "\n" for r in out)
+            os.replace(tmp, COMMANDS)
+        except OSError:
+            pass
+    return out
+
+
+def status_of(task, commands):
+    for r in commands:
+        if r.get("shell") in task["shells"] and abs(r.get("end", 0) - task["ended"]) <= TICK * 3 and r.get("start", 0) <= task["started"] + 3:
+            code = r.get("status", 0)
+            return "success" if code == 0 else "cancelled" if code in (130, 143) else "failure"
+    return None
+
+
+def load_history():
+    """The tasks that ended, from the last time."""
+    try:
+        with open(HISTORY) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for t in saved if isinstance(saved, list) else []:
+        if isinstance(t, dict) and t.get("id") and t.get("ended"):
+            t = {k: t.get(k, "") for k in KEPT}
+            t["shells"] = []
+            out[t["id"]] = t
+    return out
+
+
+def save_history(ended):
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        tmp = HISTORY + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump([{k: t[k] for k in KEPT} for t in ended], f)
+        os.replace(tmp, HISTORY)
+    except OSError:
+        pass
+
+
+def main():
+    extra = set(sys.argv[1:])
+    tasks = load_history()   # id -> task
+    saved = None
+    last_ticks = {}
+    last_time = time.time()
+
+    while True:
+        now = time.time()
+        dt = max(0.5, now - last_time)
+        last_time = now
+        procs = scan()
+
+        labels = {}
+        for pid, p in procs.items():
+            label = match(p["argv"], extra)
+            if label:
+                labels[pid] = label
+
+        busy = {pid for pid, p in procs.items() if p["ticks"] > last_ticks.get(pid, p["ticks"])}
+        cpu_of = {pid: max(0, p["ticks"] - last_ticks.get(pid, p["ticks"])) for pid, p in procs.items()}
+        last_ticks = {pid: p["ticks"] for pid, p in procs.items()}
+
+        # Children, for each task's jobs and CPU.
+        children = {}
+        for pid, p in procs.items():
+            children.setdefault(p["ppid"], []).append(pid)
+
+        seen = set()
+        for pid, label in labels.items():
+            up = ancestors(pid, procs)
+            if any(a in labels for a in up):
+                continue
+            p = procs[pid]
+            tid = "%d-%d" % (pid, int(p["start"]))
+            seen.add(tid)
+            tree, stack = [], [pid]
+            while stack:
+                q = stack.pop()
+                tree.append(q)
+                stack.extend(children.get(q, []))
+            task = tasks.get(tid)
+            if not task:
+                cwd = cwd_of(pid)
+                # An agent that started it, if one did.
+                names = [base((procs[a]["argv"] or [""])[0]) for a in up if a in procs]
+                by = next((n for n in names if n in AGENTS), "")
+                task = tasks[tid] = {
+                    "id": tid, "label": label, "folder": base(cwd) if cwd not in ("", "/", os.path.expanduser("~")) else "",
+                    "by": by, "started": p["start"], "shells": [pid] + up, "ended": 0, "state": "running",
+                }
+            task["cpu"] = round(sum(cpu_of.get(q, 0) for q in tree) / CLK / dt * 100)
+            task["jobs"] = sum(1 for q in tree[1:] if q in busy)
+
+        commands = None
+        for tid, task in list(tasks.items()):
+            if tid in seen:
+                continue
+            if task["state"] == "running":
+                if now - task["started"] < MIN_AGE + TICK:
+                    del tasks[tid]
+                    continue
+                task["ended"] = now
+                task["state"] = "done"
+                task["cpu"] = task["jobs"] = 0
+            if task["state"] == "done" and now - task["ended"] < STATUS_WAIT_S:
+                if commands is None:
+                    commands = read_commands(now)
+                task["state"] = status_of(task, commands) or "done"
+
+        running = sorted((t for t in tasks.values() if t["state"] == "running" and now - t["started"] >= MIN_AGE), key=lambda t: t["started"])
+        ended = sorted((t for t in tasks.values() if t["ended"]), key=lambda t: -t["ended"])
+        for t in ended[HISTORY_MAX:]:
+            del tasks[t["id"]]
+        ended = ended[:HISTORY_MAX]
+        key = [(t["id"], t["state"]) for t in ended]
+        if key != saved:
+            save_history(ended)
+            saved = key
+        out = []
+        for t in running + ended:
+            out.append({
+                "id": t["id"], "label": t["label"], "folder": t["folder"], "by": t["by"], "state": t["state"],
+                "elapsed": round((t["ended"] or now) - t["started"]),
+                "ago": round(now - t["ended"]) if t["ended"] else 0,
+                "cpu": t.get("cpu", 0), "jobs": t.get("jobs", 0),
+            })
+        try:
+            sys.stdout.write(json.dumps({"tasks": out}) + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            return 0
+
+        readable, _, _ = select.select([sys.stdin], [], [], TICK)
+        if readable and not sys.stdin.readline():
+            return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

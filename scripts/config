@@ -8,7 +8,7 @@ set -euo pipefail
 
 source omarchy-shell-config
 
-ID="woodenplastic.github-desk"
+ID="woodenplastic.information-wallpaper-overlay"
 
 case "${1:-}" in
 set)

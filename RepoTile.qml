@@ -14,7 +14,6 @@ Rectangle {
   property var widget: null
   property var entry: ({ repo: "", branch: "" })
   property var result: null
-
   readonly property bool ok: !!result && result.ok === true
   readonly property real nowMs: widget ? widget.nowMs : Date.now()
   readonly property bool animate: !!widget && widget.animate

@@ -1,32 +1,40 @@
 {
   "schemaVersion": 1,
-  "id": "woodenplastic.github-desk",
-  "name": "GitHub Desk",
-  "version": "1.0.1",
+  "id": "woodenplastic.information-wallpaper-overlay",
+  "name": "Information Wallpaper Overlay",
+  "version": "2.0.0",
   "author": "Adrian Wild",
   "license": "MIT",
-  "description": "Up to four GitHub repos, public or private, tiled on your desktop: a year of commits as a twinkling heatmap, stars, forks, open PRs and issues, the latest release, live Actions runs with their jobs and steps, your streak and the commit history. It follows your theme and Hyprland's gaps and rounding, and it sits behind your windows without taking clicks. It uses your gh CLI login, so there's no token to set up. A tray icon shows the CI status and opens the settings.",
+  "description": "Information on your wallpaper: up to six tiles behind your windows, the way Hyprland tiles windows. GitHub repos with a year of commits as a twinkling heatmap, stars, PRs, issues, releases and live Actions runs; herdr's coding agents, which are working and which are waiting for you; long tasks on the machine, like builds, flashing and updates, passed or failed; and what's playing, with its cover. It follows your theme and Hyprland's gaps and rounding, never takes a click, uses your gh CLI login, and can fill the lock screen too. A tray icon shows the CI status and opens the settings.",
   "kinds": [
     "bar-widget"
   ],
   "entryPoints": {
-    "barWidget": "GithubDesk.qml"
+    "barWidget": "Overlay.qml"
   },
   "barWidget": {
-    "displayName": "GitHub Desk",
-    "description": "CI status of your repos, and the settings for the GitHub tiles on the desktop.",
+    "displayName": "Information Wallpaper Overlay",
+    "description": "CI status, and the settings for the information tiles on the desktop.",
     "category": "Info",
     "aliases": [
       "github",
-      "repos"
+      "repos",
+      "herdr",
+      "agents",
+      "tasks",
+      "builds",
+      "music",
+      "wallpaper",
+      "desk"
     ],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "repos": [],
+      "tiles": [],
       "opacity": 0.2,
       "animations": true,
-      "inTray": true
+      "inTray": true,
+      "hidePluginControls": true
     }
   }
 }
