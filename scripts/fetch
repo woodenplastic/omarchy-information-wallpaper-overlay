@@ -18,7 +18,7 @@ OUT=${1:?usage: fetch <out-file> <owner/repo[:branch]>...}
 shift
 
 if ! command -v gh >/dev/null; then
-  echo "gh CLI not found; install it with: omarchy pkg add github-cli" >&2
+  echo "gh CLI not found; see https://cli.github.com" >&2
   exit 1
 fi
 

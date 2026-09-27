@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "woodenplastic.github-desk",
   "name": "GitHub Desk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Adrian Wild",
   "license": "MIT",
   "description": "Up to four GitHub repos, public or private, tiled on your desktop: a year of commits as a twinkling heatmap, stars, forks, open PRs and issues, the latest release, live Actions runs with their jobs and steps, your streak and the commit history. It follows your theme and Hyprland's gaps and rounding, and it sits behind your windows without taking clicks. It uses your gh CLI login, so there's no token to set up. A tray icon shows the CI status and opens the settings.",
