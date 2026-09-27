@@ -1,11 +1,16 @@
 #!/bin/bash
 
-# Puts Information Wallpaper Overlay on the lock screen as a design of the Lock Screen Explorer
-# plugin, or takes it off again. The design itself is lock/LockDesign.qml;
-# the file in ~/.config/omarchy/lock-designs only points at it, so plugin
-# updates reach the lock screen without writing it again.
+# Puts Information Wallpaper Overlay on the lock screen as a design of the
+# Lock Screen Explorer plugin, or takes it off again. The design itself is
+# lock/LockDesign.qml; the file in ~/.config/omarchy/lock-designs only points
+# at it, so plugin updates reach the lock screen without writing it again.
 #
-#   lock-design status   on, off, or missing (Lock Screen Explorer isn't installed)
+# That file is only ever written where no file is, and only reused or
+# removed while it is exactly what this script writes: a design of the same
+# name that isn't this plugin's, or that was edited, is left alone.
+#
+#   lock-design status   on, off, taken (the file is someone else's or was
+#                        edited), or missing (Lock Screen Explorer isn't installed)
 #   lock-design on       adds the design and makes it the lock screen
 #   lock-design off      removes it; the lock screen goes back to the explorer's default
 
@@ -19,6 +24,26 @@ FILE="$DESIGNS/InformationWallpaperOverlay.qml"
 ID="my-informationwallpaperoverlay"
 PLUGIN_NAME=$(basename "$(cd "$(dirname "$0")/.." && pwd)")
 
+# The file exactly as this plugin writes it.
+design() {
+  cat <<EOF
+// Information Wallpaper Overlay on the lock screen, added from its settings. The design lives
+// in the plugin; this file only points at it.
+import QtQuick
+import "../plugins/$PLUGIN_NAME/lock"
+
+LockDesign {}
+EOF
+}
+
+ours() {
+  [[ -f $FILE && ! -L $FILE ]] && [[ "$(cat "$FILE")" == "$(design)" ]]
+}
+
+present() {
+  [[ -e $FILE || -L $FILE ]]
+}
+
 lock() {
   omarchy-shell lock "$@" 2>/dev/null | tr -d '"[:space:]'
 }
@@ -27,7 +52,9 @@ case "${1:-}" in
 status)
   if [[ ! -d $EXPLORER ]]; then
     echo missing
-  elif [[ -f $FILE && $(lock design) == "$ID" ]]; then
+  elif present && ! ours; then
+    echo taken
+  elif ours && [[ $(lock design) == "$ID" ]]; then
     echo on
   else
     echo off
@@ -38,15 +65,18 @@ on)
     echo "Lock Screen Explorer isn't installed" >&2
     exit 1
   fi
-  mkdir -p "$DESIGNS"
-  cat >"$FILE" <<EOF
-// Information Wallpaper Overlay on the lock screen, added from its settings. The design lives
-// in the plugin; this file only points at it.
-import QtQuick
-import "../plugins/$PLUGIN_NAME/lock"
-
-LockDesign {}
-EOF
+  if present && ! ours; then
+    echo "There's already a lock design called InformationWallpaperOverlay that isn't this plugin's; it's left as it is." >&2
+    exit 1
+  fi
+  if ! ours; then
+    mkdir -p "$DESIGNS"
+    # noclobber: a file that appeared meanwhile is never replaced.
+    if ! (set -C; design >"$FILE") 2>/dev/null; then
+      echo "Couldn't add the lock design: a file of that name appeared meanwhile." >&2
+      exit 1
+    fi
+  fi
   lock rescanDesigns >/dev/null
   # The scan runs in the background; the design is there once it's done.
   for _ in {1..20}; do
@@ -57,10 +87,14 @@ EOF
   exit 1
   ;;
 off)
-  [[ -f $FILE ]] || exit 0
+  present || exit 0
+  if ! ours; then
+    echo "The InformationWallpaperOverlay lock design was changed or isn't this plugin's, so it's left in place; remove it in Lock Screen Explorer if you don't want it." >&2
+    exit 1
+  fi
   # The explorer switches to its default first when the design is in use.
   if [[ $(lock deleteDesign "$ID") != ok ]]; then
-    rm -f "$FILE"
+    ours && rm -f "$FILE"
     lock rescanDesigns >/dev/null
   fi
   ;;
