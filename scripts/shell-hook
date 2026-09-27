@@ -24,12 +24,20 @@ on)
   printf '\n%s\n' "$LINE" >>"$RC"
   ;;
 off)
-  [[ -f $RC ]] || exit 0
-  tmp=$(mktemp "$RC.XXXXXX") || exit 1
-  grep -vF "$MARK" "$RC" >"$tmp"
-  # Keeps the file's mode, and ~/.bashrc itself if it's a link.
-  cat "$tmp" >"$RC"
-  rm -f "$tmp"
+  grep -qF "$MARK" "$RC" 2>/dev/null || exit 0
+  # The file itself, so a linked ~/.bashrc stays a link to it.
+  target=$(readlink -f -- "$RC") || exit 1
+  [[ -f $target ]] || exit 1
+  # Written beside it in full, then renamed over it in one step: until then
+  # the old file is untouched, and anything failing leaves it as it was.
+  tmp=$(mktemp "$target.XXXXXX") || exit 1
+  trap 'rm -f -- "$tmp"' EXIT
+  grep -vF "$MARK" -- "$target" >"$tmp"
+  (($? <= 1)) || exit 1
+  chmod --reference="$target" -- "$tmp" || exit 1
+  sync -- "$tmp" || exit 1
+  mv -f -- "$tmp" "$target" || exit 1
+  trap - EXIT
   ;;
 *)
   echo "usage: shell-hook status|on|off" >&2
