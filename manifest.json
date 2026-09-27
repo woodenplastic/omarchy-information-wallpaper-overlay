@@ -5,7 +5,7 @@
   "version": "2.0.0",
   "author": "Adrian Wild",
   "license": "MIT",
-  "description": "Information on your wallpaper: up to six tiles behind your windows, the way Hyprland tiles windows. GitHub repos with a year of commits as a twinkling heatmap, stars, PRs, issues, releases and live Actions runs; herdr's coding agents, which are working and which are waiting for you; long tasks on the machine, like builds, flashing and updates, passed or failed; and what's playing, with its cover. It follows your theme and Hyprland's gaps and rounding, never takes a click, uses your gh CLI login, and can fill the lock screen too. A tray icon shows the CI status and opens the settings.",
+  "description": "Information on your wallpaper: up to six tiles behind your windows, laid out the way Hyprland tiles windows. GitHub repos with a year of commits and live Actions runs; herdr's coding agents, working or waiting for you; builds, flashing and updates, passed or failed; what's playing; or any installed plugin's menu, shown live. Follows your theme, gaps and rounding, never takes a click, uses your gh login, and can fill the lock screen too.",
   "kinds": [
     "bar-widget"
   ],
