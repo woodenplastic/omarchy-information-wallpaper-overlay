@@ -1,5 +1,7 @@
 # Information Wallpaper Overlay
 
+![Six tiles on the desktop: two GitHub repos, a clock, what's playing, Activity Monitor and the GPU](preview.png)
+
 **Information on your wallpaper.** Up to six tiles on the desktop, laid out
 the way Hyprland tiles windows, each one showing something you'd otherwise
 need an app open for:
