@@ -6,6 +6,12 @@
 # the value from before the first claim is kept in $XDG_RUNTIME_DIR until the
 # last one is let go, so a crash doesn't lose it either.
 #
+# It's only put back while it's still the value set here: if the user or
+# another tool changes it in the meantime (or Hyprland reloads its config),
+# theirs is left alone. A claim names the shell processes that were running
+# when it was made, and one whose shell is gone (a crash) no longer counts;
+# nor does anything saved under an earlier Hyprland.
+#
 #   unfocused-fps raise <owner> <fps>
 #   unfocused-fps restore <owner>
 
@@ -13,6 +19,8 @@ set -uo pipefail
 
 DIR="${XDG_RUNTIME_DIR:-/tmp}/information-wallpaper-overlay/unfocused-fps"
 SAVED="$DIR/before"
+OURS="$DIR/ours"
+INSTANCE="$DIR/instance"
 
 current() {
   hyprctl getoption misc:render_unfocused_fps -j 2>/dev/null | jq -r '.int // empty'
@@ -23,25 +31,75 @@ apply() {
   hyprctl eval "hl.config({ misc = { render_unfocused_fps = $1 } })" >/dev/null
 }
 
+# "pid starttime", so a reused pid isn't taken for the same process.
+identity() {
+  local stat rest
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  rest=${stat##*) }
+  read -ra fields <<<"$rest"
+  echo "$1 ${fields[19]}"
+}
+
+shells() {
+  local pid
+  for pid in $(pgrep -x quickshell); do identity "$pid"; done
+}
+
+# A claim holds while any shell it names still runs. One that names none
+# (the shell couldn't be found) is kept, as before.
+alive() {
+  local pid start any=0
+  while read -r pid start; do
+    [[ -n $pid ]] || continue
+    any=1
+    [[ $(identity "$pid") == "$pid $start" ]] && return 0
+  done <"$1"
+  ((any == 0))
+}
+
+prune() {
+  local claim
+  if [[ $(cat "$INSTANCE" 2>/dev/null) != "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    rm -f "$DIR"/claim-* "$SAVED" "$OURS"
+    echo "${HYPRLAND_INSTANCE_SIGNATURE:-}" >"$INSTANCE"
+    return
+  fi
+  for claim in "$DIR"/claim-*; do
+    [[ -f $claim ]] && ! alive "$claim" && rm -f "$claim"
+  done
+}
+
 owner=${2:-}
 [[ $owner =~ ^[a-z]+$ ]] || { echo "usage: unfocused-fps raise <owner> <fps>|restore <owner>" >&2; exit 1; }
 
+mkdir -p "$DIR"
+exec 9>"$DIR/lock"
+flock 9
+
 case "${1:-}" in
 raise)
-  mkdir -p "$DIR"
-  if [[ ! -f $SAVED ]]; then
-    before=$(current)
-    [[ -n $before ]] || exit 1
-    echo "$before" >"$SAVED"
+  fps=${3:-60}
+  [[ $fps =~ ^[0-9]+$ ]] || exit 1
+  prune
+  now=$(current)
+  [[ -n $now ]] || exit 1
+  # Nothing saved yet, or it was changed since it was raised: what's there
+  # now is what to go back to.
+  if [[ ! -f $SAVED || $now != "$(cat "$OURS" 2>/dev/null)" ]]; then
+    echo "$now" >"$SAVED"
   fi
-  touch "$DIR/claim-$owner"
-  apply "${3:-60}"
+  shells >"$DIR/claim-$owner"
+  apply "$fps" && echo "$fps" >"$OURS"
   ;;
 restore)
   rm -f "$DIR/claim-$owner"
+  prune
   compgen -G "$DIR/claim-*" >/dev/null && exit 0
   [[ -f $SAVED ]] || exit 0
-  apply "$(cat "$SAVED")" && rm -f "$SAVED"
+  if [[ $(current) == "$(cat "$OURS" 2>/dev/null)" ]]; then
+    apply "$(cat "$SAVED")" || exit 1
+  fi
+  rm -f "$SAVED" "$OURS"
   ;;
 *)
   echo "usage: unfocused-fps raise <owner> <fps>|restore <owner>" >&2

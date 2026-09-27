@@ -246,7 +246,8 @@ BarWidget {
   }
 
   onSmoothWorkspacesChanged: applySmoothWorkspaces()
-  // Also lets go of a claim a crash may have left.
+  // Letting go at the start too clears claims a crashed shell left.
+  onIsPrimaryChanged: if (root.isPrimary && !root.smoothWorkspaces) applySmoothWorkspaces()
   Component.onDestruction: if (root.isPrimary) Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", "restore", "desk"])
 
   // ---- Installed plugins, for plugin tiles (PluginTile, scripts/plugins):

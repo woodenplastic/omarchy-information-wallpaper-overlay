@@ -174,7 +174,8 @@ windows on hidden workspaces at `misc:render_unfocused_fps` (15 by default),
 so while a workspace tile is in view, on the desk or the lock screen, that's
 raised to 60 through `hyprctl eval`, and the value before comes back once
 none is (`scripts/unfocused-fps` keeps it in `$XDG_RUNTIME_DIR`, so a crash
-doesn't lose it either). It's a global setting, so windows on other hidden
+doesn't lose it either). If you or another tool change it in the meantime,
+your value stays. It's a global setting, so windows on other hidden
 workspaces render at 60 in that time too. A workspace slot starts out kept off the lock
 screen, since anyone there would see its windows; its lock button changes
 that.
