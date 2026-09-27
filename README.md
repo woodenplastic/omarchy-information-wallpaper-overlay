@@ -84,8 +84,9 @@ processes and shows each one that has run five seconds:
   `tsc`, `vite build`, `next build`, `docker`/`podman build`, `kicad-cli`,
   `pio run`, `arduino-cli`
 - **Flashing:** `esptool`, `idf.py flash`, `dfu-util`
-- **Updates and installs:** `pacman -S/-U/-R`, `yay`, `paru`, `makepkg`,
-  `flatpak`, `pip install`, `uv`
+- **Updates and installs** that you run: `pacman` and `yay` or `paru`
+  changing packages, `makepkg`, `flatpak`, `pip` and `uv` (the tile only
+  watches them; it never runs one)
 - **Copies:** `rsync`, `dd`, `ffmpeg`, `tar`, `zstd`, `xz`, `7z`,
   `git clone/fetch/pull/push`
 
