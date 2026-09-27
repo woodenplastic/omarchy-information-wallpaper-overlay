@@ -283,7 +283,10 @@ cached repo data and avatars.
 
 - **Network:** GitHub's API through your `gh` login (repos, commits, Actions
   runs and jobs, your repo list for the suggestions), and the owners' avatars
-  from `avatars.githubusercontent.com`.
+  from `avatars.githubusercontent.com`. For a sharp cover, the music tile
+  sends the playing track's artist and title to Apple's iTunes Search API
+  (`itunes.apple.com`) and, for videos, YouTube's search page, then loads the
+  cover from `i.ytimg.com`; nothing else is sent.
 - **Files:** writes its settings to `~/.config/omarchy/shell.json` through
   Omarchy's `omarchy-shell-config` helper, only when you change them in the
   popup, and its cache to `~/.cache/information-wallpaper-overlay/`. With the
@@ -291,7 +294,9 @@ cached repo data and avatars.
   `~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml`
   and talks to Lock Screen Explorer through `omarchy-shell lock`. With
   **Pass or fail for terminal commands** on, it adds one marked line to
-  `~/.bashrc`, and turning it off takes that line out again. The tray icons are
+  `~/.bashrc`, and turning it off takes that line out again; the hook notes
+  commands' exit statuses in
+  `$XDG_RUNTIME_DIR/information-wallpaper-overlay/commands.jsonl`. The tray icons are
   drawn into `$XDG_RUNTIME_DIR/information-wallpaper-overlay-icons/`. The
   tasks tile keeps its last tasks in
   `~/.local/state/information-wallpaper-overlay/tasks.json`.
