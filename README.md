@@ -207,23 +207,23 @@ The popup holds everything:
 
 With the [Lock Screen Explorer](https://github.com/SirJul1337/omarchy-lock-explorer)
 plugin installed, the popup gets a **Lock screen** section. **On the lock
-screen** adds the overlay as one of the explorer's designs and makes it
-the lock screen: the tiles fill the screen as on the desktop, with a card in
-the middle for the clock, the date, the CI status, agents waiting for you and
-the password field.
-Turning it off removes the design, and the explorer goes back to its
-default. You can also pick it in the explorer, where it's called
+screen** adds the overlay as one of the explorer's designs and makes it the
+lock screen: the tiles fill the screen as on the desktop, with a card in the
+middle for the clock, the date, the CI status, agents waiting for you and the
+password field. Turning it off removes the design, and the explorer goes back
+to its default. You can also pick it in the explorer, where it's called
 "InformationWallpaperOverlay" under Custom.
 
-The lock screen shows what the desktop shows, from the same cache; the bar
-widget keeps fetching while the screen is locked. Anyone at the locked
-screen can read it, so each slot has a lock button beside it in the popup:
-locked, that tile stays off the lock screen, and the others share its room
-there. A private repo or your agents' work can stay on the desktop only.
+The lock screen shows what the desktop shows, plugin tiles included, from the
+same data; the bar widget keeps fetching while the screen is locked. Anyone at
+the locked screen can read it, so each slot has a lock button beside it in the
+popup: locked, that tile stays off the lock screen, and the others share its
+room there. A private repo or your agents' work can stay on the desktop only.
+Nothing in a tile can be clicked or typed into there either.
 
 The design is `lock/LockDesign.qml` in the plugin.
-`~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml` only points at it, so plugin
-updates reach the lock screen without adding it again.
+`~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml` only points
+at it, so plugin updates reach the lock screen without adding it again.
 
 ## Requirements
 
@@ -254,10 +254,11 @@ immediately after a restart.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/woodenplastic/omarchy-github-desk.git --enable
+omarchy plugin add https://github.com/woodenplastic/omarchy-information-wallpaper-overlay.git --enable
 ```
 
-Then click the four-tiles icon (behind the tray's arrow) and add your tiles.
+Then click the four-tiles icon (behind the tray's arrow) and pick what each
+slot shows.
 
 The tiles only appear on the first monitor, drawn by the widget there. If
 you remove the widget from the bar, the tiles go with it.
