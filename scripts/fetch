@@ -1,0 +1,340 @@
+#!/bin/bash
+
+# Fetches what the desk shows for each repo through the gh CLI, so private
+# repos work with the login gh already has, and writes it as one JSON object:
+# {"fetched": <time>, "results": [<one per repo, in order>]}.
+#
+#   fetch <out-file> <owner/repo[:branch]>...
+#
+# An empty branch means the repo's default branch. The file is replaced
+# atomically, so the widgets watching it never read half of it. A repo that
+# fails gets {"repo", "ok": false, "error"} and keeps the others going.
+
+set -uo pipefail
+# Private repos' commit messages end up in the cache; keep it to the user.
+umask 077
+
+OUT=${1:?usage: fetch <out-file> <owner/repo[:branch]>...}
+shift
+
+if ! command -v gh >/dev/null; then
+  echo "gh CLI not found; install it with: omarchy pkg add github-cli" >&2
+  exit 1
+fi
+
+CACHE_DIR=$(dirname "$OUT")
+AVATARS="$CACHE_DIR/avatars"
+mkdir -p "$AVATARS"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+# Paging through a year of history is the last resort; it stops here.
+MAX_YEAR_PAGES=60
+
+QUERY='
+query($owner: String!, $name: String!, $qualified: String!, $hasBranch: Boolean!) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    description
+    isPrivate
+    stargazerCount
+    forkCount
+    watchers { totalCount }
+    owner { login avatarUrl(size: 160) }
+    pullRequests(states: OPEN) { totalCount }
+    issues(states: OPEN) { totalCount }
+    latestRelease { tagName publishedAt }
+    defaultBranchRef { name target { ...commits } }
+    ref(qualifiedName: $qualified) @include(if: $hasBranch) { name target { ...commits } }
+  }
+}
+fragment commits on Commit {
+  all: history(first: 1) { totalCount }
+  recent: history(first: 30) {
+    nodes {
+      abbreviatedOid
+      messageHeadline
+      committedDate
+      author { name user { login } }
+      associatedPullRequests(first: 1) { nodes { number title } }
+    }
+  }
+}'
+
+YEAR_QUERY='
+query($owner: String!, $name: String!, $qualified: String!, $since: GitTimestamp!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $qualified) {
+      target { ... on Commit { history(first: 100, since: $since, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { committedDate }
+      } } }
+    }
+  }
+}'
+
+# Each result carries the spec it was asked for as `query`, so the desk finds
+# it again even when GitHub answers with a renamed repo.
+fail_json() {
+  jq -n --arg query "$SPEC" --arg repo "$1" --arg error "$2" '{query: $query, repo: $repo, ok: false, error: $error}'
+}
+
+# Commits per day since $4 (a timestamp) as {"YYYY-MM-DD": count}, into $5.
+# Creates "$5.partial" when the page limit cut it short.
+count_days_since() {
+  local owner=$1 name=$2 branch=$3 since=$4 out=$5
+  local dates="$out.dates" cursor="" page=0 more
+  echo '[]' >"$dates"
+  while (( page < MAX_YEAR_PAGES )); do
+    local args=(-f query="$YEAR_QUERY" -F owner="$owner" -F name="$name" -F qualified="refs/heads/$branch" -F since="$since")
+    [[ -n $cursor ]] && args+=(-F after="$cursor")
+    more=$(gh api graphql "${args[@]}" 2>/dev/null) || break
+    jq -c --slurpfile have "$dates" '$have[0] + [.data.repository.ref.target.history.nodes[].committedDate]' <<<"$more" >"$dates.next" \
+      && mv "$dates.next" "$dates"
+    cursor=$(jq -r '.data.repository.ref.target.history.pageInfo | select(.hasNextPage) | .endCursor' <<<"$more")
+    [[ -z $cursor ]] && break
+    page=$((page + 1))
+  done
+  [[ -n $cursor ]] && touch "$out.partial"
+  jq -c 'map(.[0:10]) | group_by(.) | map({key: .[0], value: length}) | from_entries' "$dates" >"$out"
+}
+
+# A year of commits per day, into $2 as
+# {"days": {"YYYY-MM-DD": count}, "full": <day of the last full count>, "partial": bool}.
+#
+# GitHub's weekly stats are one request but only cover the default branch and
+# answer 202 while GitHub computes them (big repos may take long), so they're
+# asked a few times. Otherwise the last fetch's year is brought up to date
+# with the commits since that fetch's day, and the whole year is counted
+# through the history once a week, or when there's no year to build on.
+year_days() {
+  local repo=$1 out=$2 branch=$3 is_default=$4 spec=$5
+  local owner=${repo%%/*} name=${repo#*/}
+  local today cutoff
+  today=$(date -u +%Y-%m-%d)
+  cutoff=$(date -u -d '371 days ago' +%Y-%m-%d)
+
+  if [[ $is_default == true ]]; then
+    local stats
+    for attempt in 1 2; do
+      stats=$(gh api "repos/$repo/stats/commit_activity" 2>/dev/null)
+      if [[ $(jq -r 'type == "array" and length > 0' <<<"$stats" 2>/dev/null) == true ]]; then
+        # GitHub caches these for hours, so the last week is counted from the
+        # history itself and replaces theirs.
+        local week
+        week=$(date -u -d '7 days ago' +%Y-%m-%d)
+        count_days_since "$owner" "$name" "$branch" "${week}T00:00:00Z" "$out.week"
+        jq -c --arg today "$today" --arg week "$week" --slurpfile recent "$out.week" '{
+            days: (([.[] | .week as $w | .days | to_entries[] | select(.value > 0)
+                    | {key: (($w + .key * 86400) | strftime("%Y-%m-%d")), value: .value}] | from_entries
+                    | with_entries(select(.key < $week))) + $recent[0]),
+            full: $today, partial: false}' <<<"$stats" >"$out" && return
+      fi
+      sleep 1
+    done
+  fi
+
+  # The last fetch's year, when complete and counted fully this week.
+  local week_ago
+  week_ago=$(date -u -d '7 days ago' +%Y-%m-%d)
+  local prev="$out.prev"
+  if [[ -s $OUT ]]; then
+    jq -c --arg q "$spec" --arg week "$week_ago" \
+      'first(.results[]? | select(.query == $q and .ok and .days != null and .yearPartial != true
+                                  and (.yearFull // "") >= $week and (.fetched // "") != ""))' \
+      "$OUT" >"$prev" 2>/dev/null
+  fi
+
+  if [[ -s $prev ]]; then
+    # Recount from the start of the last fetch's day and keep what's older.
+    local base
+    base=$(jq -r '.fetched[0:10]' "$prev")
+    count_days_since "$owner" "$name" "$branch" "${base}T00:00:00Z" "$out.recent"
+    if [[ ! -e $out.recent.partial ]]; then
+      jq -c --slurpfile recent "$out.recent" --arg base "$base" --arg cutoff "$cutoff" '{
+          days: ((.days | with_entries(select(.key < $base and .key >= $cutoff))) + $recent[0]),
+          full: .yearFull, partial: false}' "$prev" >"$out" && return
+    fi
+  fi
+
+  count_days_since "$owner" "$name" "$branch" "${cutoff}T00:00:00Z" "$out.all"
+  jq -c --arg today "$today" --argjson partial "$([[ -e $out.all.partial ]] && echo true || echo false)" \
+    '{days: ., full: $today, partial: $partial}' "$out.all" >"$out"
+}
+
+# The owner's avatar, for the desk to tint. Asked for on every fetch with the
+# last ETag, so an unchanged one costs a "not modified"; a new one gets a new
+# file name, which makes the desk load it afresh. Repos of one owner fetch at
+# the same time, so the owner's avatar is locked while it's checked.
+fetch_avatar() {
+  local login=$1 url=$2
+  [[ -n $login && -n $url ]] || return
+  local current="$AVATARS/.$login.current" etag="$AVATARS/.$login.etag"
+  (
+    flock 9
+    local staged
+    staged=$(mktemp "$AVATARS/.avatar.XXXXXX")
+    local compare=()
+    [[ -s $etag && -s $(cat "$current" 2>/dev/null) ]] && compare=(--etag-compare "$etag")
+    if curl -fsSL --max-time 15 "${compare[@]}" --etag-save "$etag.new" "$url" -o "$staged" && [[ -s $staged ]]; then
+      local file
+      file="$AVATARS/$login-$(sha1sum "$staged" | cut -c1-12).png"
+      mv "$staged" "$file"
+      mv "$etag.new" "$etag"
+      local old
+      old=$(cat "$current" 2>/dev/null)
+      printf '%s' "$file" >"$current"
+      [[ -n $old && $old != "$file" ]] && rm -f "$old"
+      # Left over from versions that kept one file per owner.
+      rm -f "$AVATARS/$login.png"
+    fi
+    rm -f "$staged" "$etag.new"
+  ) 9>"$AVATARS/.$login.lock"
+  local file
+  file=$(cat "$current" 2>/dev/null)
+  [[ -s $file ]] && printf '%s' "$file"
+}
+
+# One repo: GraphQL for the repo and its commits, REST for the runs.
+fetch_repo() {
+  local spec=$1 out=$2
+  SPEC=$spec
+  local repo=${spec%%:*} branch=""
+  [[ $spec == *:* ]] && branch=${spec#*:}
+  local owner=${repo%%/*} name=${repo#*/}
+
+  if [[ ! $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    fail_json "$repo" "Not an owner/repo name" >"$out"
+    return
+  fi
+
+  local has_branch=false
+  [[ -n $branch ]] && has_branch=true
+
+  local response error
+  if ! response=$(gh api graphql -f query="$QUERY" -F owner="$owner" -F name="$name" \
+    -F qualified="refs/heads/${branch:-_}" -F hasBranch="$has_branch" 2>&1); then
+    error=$(jq -r '.errors[0].message // empty' <<<"$response" 2>/dev/null)
+    fail_json "$repo" "${error:-$(head -c 200 <<<"$response")}" >"$out"
+    return
+  fi
+
+  if [[ $(jq -r '.data.repository == null' <<<"$response") == true ]]; then
+    fail_json "$repo" "Repository not found or no access" >"$out"
+    return
+  fi
+
+  # The branch the desk shows: the chosen one when it exists, else the default.
+  local target='(.data.repository | if .ref then .ref else .defaultBranchRef end)'
+  if [[ $has_branch == true && $(jq -r '.data.repository.ref == null' <<<"$response") == true ]]; then
+    fail_json "$repo" "Branch $branch not found" >"$out"
+    return
+  fi
+  if [[ $(jq -r "$target == null" <<<"$response") == true ]]; then
+    fail_json "$repo" "Repository is empty" >"$out"
+    return
+  fi
+  local shown_branch default_branch real_repo
+  shown_branch=$(jq -r "$target.name" <<<"$response")
+  default_branch=$(jq -r '.data.repository.defaultBranchRef.name // ""' <<<"$response")
+  real_repo=$(jq -r '.data.repository.nameWithOwner' <<<"$response")
+
+  local year="$TMP/${out##*/}.year"
+  local is_default=false
+  [[ $shown_branch == "$default_branch" ]] && is_default=true
+  year_days "$real_repo" "$year" "$shown_branch" "$is_default" "$spec"
+  [[ -s $year ]] || echo '{"days": {}, "full": "", "partial": true}' >"$year"
+
+  local avatar
+  avatar=$(fetch_avatar "$(jq -r '.data.repository.owner.login' <<<"$response")" "$(jq -r '.data.repository.owner.avatarUrl // ""' <<<"$response")")
+
+  # Workflow runs; a repo without Actions just has none.
+  # The responses go to jq as files: a busy repo's runs outgrow an argument.
+  local runs="$TMP/${out##*/}.runs"
+  gh api "repos/$real_repo/actions/runs?per_page=12&branch=$(jq -rn --arg b "$shown_branch" '$b | @uri')" >"$runs" 2>/dev/null \
+    || echo '{"workflow_runs": []}' >"$runs"
+  printf '%s' "$response" >"$TMP/${out##*/}.repo"
+
+  # Jobs and steps of the runs going on, and of those that ended in the last
+  # three minutes, for the desk's live view: {"<run id>": [jobs]}.
+  local jobs="$TMP/${out##*/}.jobs"
+  echo '{}' >"$jobs"
+  local run_id
+  for run_id in $(jq -r '.workflow_runs[]? | select(.status != "completed"
+      or ((now - (.updated_at | fromdateiso8601)) < 180)) | .id' "$runs"); do
+    local run_jobs
+    run_jobs=$(gh api "repos/$real_repo/actions/runs/$run_id/jobs?per_page=30" 2>/dev/null) || continue
+    jq -c --arg id "$run_id" --argjson j "$run_jobs" '.[$id] = [$j.jobs[]? | {
+        name, status, conclusion: (.conclusion // ""), started: .started_at, completed: .completed_at,
+        steps: [.steps[]? | {name, status, conclusion: (.conclusion // ""), started: .started_at, completed: .completed_at}]
+      }]' "$jobs" >"$jobs.next" && mv "$jobs.next" "$jobs"
+  done
+
+  jq -n --slurpfile r "$TMP/${out##*/}.repo" --slurpfile runs "$runs" --slurpfile year "$year" --slurpfile jobs "$jobs" \
+    --arg branch "$shown_branch" --arg query "$spec" --arg avatar "$avatar" --arg fetched "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    ($r[0].data.repository) as $repo
+    | ($repo | if .ref then .ref else .defaultBranchRef end) as $target
+    | {
+        query: $query,
+        repo: $repo.nameWithOwner,
+        ok: true,
+        description: ($repo.description // ""),
+        private: $repo.isPrivate,
+        owner: $repo.owner.login,
+        avatar: $avatar,
+        branch: $branch,
+        defaultBranch: ($repo.defaultBranchRef.name // ""),
+        stars: $repo.stargazerCount,
+        forks: $repo.forkCount,
+        watchers: $repo.watchers.totalCount,
+        prs: $repo.pullRequests.totalCount,
+        issues: $repo.issues.totalCount,
+        release: ($repo.latestRelease.tagName // ""),
+        totalCommits: $target.target.all.totalCount,
+        fetched: $fetched,
+        days: $year[0].days,
+        yearFull: $year[0].full,
+        yearPartial: $year[0].partial,
+        # A merge commit reads better as the pull request it merged.
+        commits: [$target.target.recent.nodes[] | {
+          sha: .abbreviatedOid,
+          message: (
+            (.associatedPullRequests.nodes[0]) as $pr
+            | if $pr and (.messageHeadline | test("^Merge pull request #"))
+              then "\($pr.title) (#\($pr.number))"
+              else .messageHeadline end),
+          author: (.author.user.login // .author.name // ""),
+          date: .committedDate
+        }],
+        runs: [$runs[0].workflow_runs[]? | {
+          id: (.id | tostring),
+          number: .run_number,
+          event: (.event // ""),
+          name: (.name // .display_title // ""),
+          title: (.display_title // ""),
+          status: .status,
+          conclusion: (.conclusion // ""),
+          started: (.run_started_at // .created_at),
+          updated: .updated_at,
+          jobs: $jobs[0][.id | tostring]
+        }]
+      }' >"$out" 2>/dev/null || fail_json "$repo" "Could not read the GitHub response" >"$out"
+}
+
+i=0
+for spec in "$@"; do
+  fetch_repo "$spec" "$TMP/$(printf '%02d' $i).json" &
+  i=$((i + 1))
+done
+wait
+
+if (( i == 0 )); then
+  jq -n '{fetched: (now | todate), results: []}' >"$TMP/all"
+else
+  jq -s '{fetched: (now | todate), results: .}' "$TMP"/[0-9]*.json >"$TMP/all" || exit 1
+fi
+
+# Renamed from beside the target: a rename across filesystems isn't atomic.
+STAGED=$(mktemp "$CACHE_DIR/.fetch.XXXXXX")
+cp "$TMP/all" "$STAGED" && mv "$STAGED" "$OUT" || { rm -f "$STAGED"; exit 1; }

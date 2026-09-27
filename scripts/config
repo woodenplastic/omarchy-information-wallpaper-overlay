@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# Stores a setting on the widget's bar entry in ~/.config/omarchy/shell.json.
+#
+#   config set <key> <json-value>
+
+set -euo pipefail
+
+source omarchy-shell-config
+
+ID="woodenplastic.github-desk"
+
+case "${1:-}" in
+set)
+  [[ -n ${2:-} && -n ${3:-} ]] || fail "usage: config set <key> <json-value>"
+  commit "$NORMALIZE | .bar.layout |= map_values(map(if .id == \$id then .[\$key] = \$value else . end))" \
+    --arg id "$ID" --arg key "$2" --argjson value "$3"
+  ;;
+*)
+  fail "usage: config set <key> <json-value>"
+  ;;
+esac

@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# Lists the repos the gh login owns or reaches through its organizations,
+# most recently pushed first, for the settings popup to suggest:
+# {"fetched": <time>, "repos": [{"repo", "private", "owner", "org", "description"}]}
+#
+#   repos <out-file>
+
+set -uo pipefail
+umask 077
+
+OUT=${1:?usage: repos <out-file>}
+
+if ! command -v gh >/dev/null; then
+  echo "gh CLI not found; install it with: omarchy pkg add github-cli" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$OUT")"
+STAGED=$(mktemp "$(dirname "$OUT")/.repos.XXXXXX")
+trap 'rm -f "$STAGED"' EXIT
+
+gh api --paginate "user/repos?per_page=100&affiliation=owner,organization_member&sort=pushed" \
+  --jq '.[] | {repo: .full_name, private: .private, owner: .owner.login, org: (.owner.type == "Organization"), description: (.description // "")}' \
+  | jq -s '{fetched: (now | todate), repos: .}' >"$STAGED" || exit 1
+
+mv "$STAGED" "$OUT"
