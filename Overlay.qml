@@ -226,6 +226,29 @@ BarWidget {
     }
   }
 
+  // ---- Windows and monitors, for workspace tiles.
+
+  WorkspaceFeed {
+    id: workspaceWatcher
+    active: root.isPrimary && Model.hasKind(root.tiles, "workspace")
+  }
+
+  readonly property var workspaceFeed: workspaceWatcher
+
+  // A workspace on the visible desk runs at 60 fps: Hyprland draws windows
+  // on hidden workspaces at misc:render_unfocused_fps (15 unless set), so
+  // that's raised while one is in view and put back once none is
+  // (scripts/unfocused-fps, which the lock screen shares).
+  readonly property bool smoothWorkspaces: root.isPrimary && root.desktopShown && Model.hasKind(root.tiles, "workspace")
+
+  function applySmoothWorkspaces() {
+    Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", root.smoothWorkspaces ? "raise" : "restore", "desk", "60"])
+  }
+
+  onSmoothWorkspacesChanged: applySmoothWorkspaces()
+  // Also lets go of a claim a crash may have left.
+  Component.onDestruction: if (root.isPrimary) Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", "restore", "desk"])
+
   // ---- Installed plugins, for plugin tiles (PluginTile, scripts/plugins):
   //      listed at the start and when the popup opens.
 
@@ -358,7 +381,11 @@ BarWidget {
   }
 
   onSpecsChanged: refetchSoon.restart()
-  onIsPrimaryChanged: if (isPrimary) refetchSoon.restart()
+  onIsPrimaryChanged: if (isPrimary) {
+    refetchSoon.restart()
+    // Sets the desk's 60 fps claim as it is now, dropping one a crash left.
+    applySmoothWorkspaces()
+  }
 
   // The fetch replaces the cache by renaming a new file over it, which a
   // file watch can lose track of, so the tick reads it again too. That's how
@@ -435,10 +462,25 @@ BarWidget {
     target: Hyprland
     function onRawEvent(event) {
       if (event.name === "configreloaded") lookSoon.restart()
+      if (/^(openwindow|closewindow|movewindow|workspace|moveworkspace|focusedmon)/.test(event.name)) windowsSoon.restart()
+    }
+  }
+
+  // Quickshell learns which windows are on which workspace only from the
+  // events it sees, so after a shell restart it takes a covered desk for an
+  // empty one. Asked at the start and after window events, so the desk knows
+  // when windows cover it (for the animations, plugin tiles and 60 fps).
+  Timer {
+    id: windowsSoon
+    interval: 150
+    onTriggered: {
+      Hyprland.refreshWorkspaces()
+      Hyprland.refreshToplevels()
     }
   }
 
   Component.onCompleted: {
+    windowsSoon.restart()
     refreshLook()
     refreshPlugins()
     refetchSoon.restart()

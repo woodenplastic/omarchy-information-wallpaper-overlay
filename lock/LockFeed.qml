@@ -102,6 +102,29 @@ Item {
   readonly property var tasksFeed: tasksWatcher
   readonly property var mediaService: null
 
+  // ---- Windows and monitors, for workspace tiles on the lock screen.
+
+  Desk.WorkspaceFeed {
+    id: workspaceWatcher
+    active: root.live && Model.hasKind(root.tiles, "workspace")
+  }
+
+  readonly property var workspaceFeed: workspaceWatcher
+
+  // A workspace on the real lock screen runs at 60 fps: Hyprland draws
+  // windows on hidden workspaces at misc:render_unfocused_fps (15 unless
+  // set), so that's raised while it's shown and put back after
+  // (scripts/unfocused-fps keeps the value it replaced).
+  readonly property bool smoothWorkspaces: root.live && Model.hasKind(root.tiles, "workspace")
+
+  function applySmoothWorkspaces() {
+    Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", root.smoothWorkspaces ? "raise" : "restore", "lock", "60"])
+  }
+
+  onSmoothWorkspacesChanged: applySmoothWorkspaces()
+  Component.onCompleted: if (smoothWorkspaces) applySmoothWorkspaces()
+  Component.onDestruction: if (smoothWorkspaces) Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", "restore", "lock"])
+
   // ---- Installed plugins, for plugin tiles (see the bar widget): listed
   //      while live. The copies get a bar with the look's fallbacks, since
   //      the lock screen has no bar.

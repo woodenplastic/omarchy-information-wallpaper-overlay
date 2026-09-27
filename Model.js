@@ -2,7 +2,7 @@
 
 var MAX_TILES = 6
 // What a slot can show.
-var KINDS = ["github", "herdr", "music", "tasks", "plugin"]
+var KINDS = ["github", "herdr", "music", "tasks", "plugin", "workspace"]
 var ACTIVITY_DAYS = 28
 
 // "owner/repo" from what people paste: a GitHub URL, an SSH remote or the
@@ -23,8 +23,8 @@ function normalizeBranch(text) {
 }
 
 // The six slots as saved: { kind: "github", repo, branch }, { kind: "herdr" },
-// { kind: "music" }, { kind: "tasks", tools }, { kind: "plugin", plugin }
-// or { kind: "empty" }; any filled one can carry hideOnLock: true, to stay
+// { kind: "music" }, { kind: "tasks", tools }, { kind: "plugin", plugin },
+// { kind: "workspace", workspace } or { kind: "empty" }; any filled one can carry hideOnLock: true, to stay
 // off the lock screen. A repo
 // slot keeps what was typed even before it's a repo, so the slot stays one.
 // A bare repo string or an entry without a kind is a repo; a shorter list
@@ -41,6 +41,7 @@ function slotList(value) {
     var slot = kind === "github" ? { kind: kind, repo: normalizeRepo(entry.repo) || String(entry.repo || "").trim(), branch: normalizeBranch(entry.branch) }
       : kind === "tasks" ? { kind: kind, tools: toolList(entry.tools) }
       : kind === "plugin" ? { kind: kind, plugin: String(entry.plugin || "").trim() }
+      : kind === "workspace" ? { kind: kind, workspace: String(entry.workspace || "").trim() }
       : { kind: kind }
     if (kind !== "empty" && entry.hideOnLock === true) slot.hideOnLock = true
     out.push(slot)
@@ -53,7 +54,7 @@ function slotList(value) {
 // once one is set.
 function tileList(value) {
   return slotList(value).filter(function(t) {
-    return t.kind !== "empty" && (t.kind !== "github" || normalizeRepo(t.repo) !== "") && (t.kind !== "plugin" || t.plugin !== "")
+    return t.kind !== "empty" && (t.kind !== "github" || normalizeRepo(t.repo) !== "") && (t.kind !== "plugin" || t.plugin !== "") && (t.kind !== "workspace" || t.workspace !== "")
   })
 }
 
@@ -69,11 +70,12 @@ var KIND_OPTIONS = [
   { value: "herdr", label: "herdr agents" },
   { value: "tasks", label: "Tasks" },
   { value: "music", label: "Now playing" },
-  { value: "plugin", label: "Installed plugin" }
+  { value: "plugin", label: "Installed plugin" },
+  { value: "workspace", label: "Workspace (live)" }
 ]
 
 function kindGlyph(kind) {
-  return kind === "github" ? "\uf09b" : kind === "herdr" ? "\udb81\udea9" : kind === "tasks" ? "\uf085" : kind === "music" ? "\uf001" : kind === "plugin" ? "\uf12e" : ""
+  return kind === "github" ? "\uf09b" : kind === "herdr" ? "\udb81\udea9" : kind === "tasks" ? "\uf085" : kind === "music" ? "\uf001" : kind === "plugin" ? "\uf12e" : kind === "workspace" ? "\uf108" : ""
 }
 
 // Extra programs for the tasks tile to watch, from a list or what's typed:

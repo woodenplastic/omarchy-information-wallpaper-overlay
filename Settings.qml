@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -46,7 +47,7 @@ Panel {
 
   function loadDrafts() {
     var list = root.widget ? root.widget.slots : Model.slotList([])
-    root.drafts = list.map(function(e) { return { kind: e.kind, repo: e.repo || "", branch: e.branch || "", tools: (e.tools || []).join(", "), plugin: e.plugin || "", hideOnLock: e.hideOnLock === true } })
+    root.drafts = list.map(function(e) { return { kind: e.kind, repo: e.repo || "", branch: e.branch || "", tools: (e.tools || []).join(", "), plugin: e.plugin || "", workspace: e.workspace || "", hideOnLock: e.hideOnLock === true } })
   }
 
   function saveDrafts() {
@@ -55,6 +56,7 @@ Panel {
       var slot = d.kind === "github" ? { kind: "github", repo: Model.normalizeRepo(d.repo) || d.repo.trim(), branch: Model.normalizeBranch(d.branch) }
         : d.kind === "tasks" ? { kind: "tasks", tools: Model.toolList(d.tools) }
         : d.kind === "plugin" ? { kind: "plugin", plugin: d.plugin }
+        : d.kind === "workspace" ? { kind: "workspace", workspace: d.workspace }
         : { kind: d.kind }
       if (d.kind !== "empty" && d.hideOnLock) slot.hideOnLock = true
       return slot
@@ -67,7 +69,10 @@ Panel {
   function setKind(index, kind) {
     if (!root.drafts[index] || root.drafts[index].kind === kind) return
     var next = root.drafts.slice()
-    next[index] = { kind: kind, repo: "", branch: "", tools: "", plugin: "", hideOnLock: root.drafts[index].hideOnLock === true }
+    // A live workspace starts off the lock screen: anyone there would see
+    // its windows.
+    next[index] = { kind: kind, repo: "", branch: "", tools: "", plugin: "", workspace: "",
+      hideOnLock: kind === "workspace" ? true : root.drafts[index].hideOnLock === true }
     root.drafts = next
     root.saveDrafts()
     if (kind === "github") Qt.callLater(function() {
@@ -114,7 +119,7 @@ Panel {
     var out = []
     for (var i = 0; i < root.drafts.length; i++) {
       var d = root.drafts[i]
-      if (d.kind !== "empty" && (d.kind !== "github" || Model.normalizeRepo(d.repo)) && (d.kind !== "plugin" || d.plugin)) out.push({ slot: i, kind: d.kind })
+      if (d.kind !== "empty" && (d.kind !== "github" || Model.normalizeRepo(d.repo)) && (d.kind !== "plugin" || d.plugin) && (d.kind !== "workspace" || d.workspace)) out.push({ slot: i, kind: d.kind })
     }
     return out
   }
@@ -129,6 +134,27 @@ Panel {
       var shared = list.some(function(q) { return q !== p && q.name === p.name })
       return { value: p.id, label: shared ? p.name + " (" + p.id + ")" : p.name }
     })
+  }
+
+  // Workspaces a workspace slot can show: 1 to 10, and any other Hyprland
+  // has now (named or special ones).
+  readonly property var workspaceOptions: {
+    var out = []
+    for (var n = 1; n <= 10; n++) out.push({ value: String(n), label: "Workspace " + n })
+    var list = Hyprland.workspaces ? Hyprland.workspaces.values : []
+    for (var i = 0; i < list.length; i++) {
+      var ws = list[i]
+      var value = ws.id >= 1 && ws.id <= 10 ? String(ws.id) : ws.name
+      if (out.some(function(o) { return o.value === value })) continue
+      out.push({ value: value, label: value.indexOf("special:") === 0 ? "Special: " + value.substring(8) : "Workspace " + value })
+    }
+    return out
+  }
+
+  function setWorkspace(index, value) {
+    if (!root.drafts[index]) return
+    root.drafts[index].workspace = value
+    root.saveDrafts()
   }
 
   function setPlugin(index, id) {
@@ -384,8 +410,20 @@ Panel {
                     onPopupOpenChanged: root.openDropdowns = Math.max(0, root.openDropdowns + (popupOpen ? 1 : -1))
                   }
 
+                  Dropdown {
+                    visible: row.kind === "workspace"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    showLabel: false
+                    options: [{ value: "", label: "Pick a workspace" }].concat(root.workspaceOptions)
+                    value: row.draft.workspace || ""
+                    onChanged: function(value) { if (value) root.setWorkspace(row.index, value) }
+                    onPopupOpenChanged: root.openDropdowns = Math.max(0, root.openDropdowns + (popupOpen ? 1 : -1))
+                  }
+
                   Text {
-                    visible: row.kind !== "github" && row.kind !== "tasks" && row.kind !== "plugin"
+                    visible: row.kind !== "github" && row.kind !== "tasks" && row.kind !== "plugin" && row.kind !== "workspace"
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -663,7 +701,7 @@ Panel {
         }
 
         Text {
-          visible: column.lockDesign === "missing" || (!!root.widget && root.widget.lockDesignError !== "")
+          visible: column.lockDesign === "missing" || column.lockDesign === "taken" || (!!root.widget && root.widget.lockDesignError !== "")
           width: parent.width
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
@@ -671,6 +709,7 @@ Panel {
           font.pixelSize: Style.font.caption
           color: root.widget && root.widget.lockDesignError ? Color.urgent : root.dim
           text: root.widget && root.widget.lockDesignError ? root.widget.lockDesignError
+            : column.lockDesign === "taken" ? "A lock design called InformationWallpaperOverlay already exists and isn't this plugin's, so it's left alone. Rename or remove it in Lock Screen Explorer to use this one."
             : "Install the Lock Screen Explorer plugin to show the tiles on the lock screen too."
         }
 

@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# Raises Hyprland's misc:render_unfocused_fps while a workspace tile is shown
+# (on the desk or the lock screen), so its live windows run smoothly, and
+# puts it back once none is. Each place holds its own claim ("desk", "lock");
+# the value from before the first claim is kept in $XDG_RUNTIME_DIR until the
+# last one is let go, so a crash doesn't lose it either.
+#
+#   unfocused-fps raise <owner> <fps>
+#   unfocused-fps restore <owner>
+
+set -uo pipefail
+
+DIR="${XDG_RUNTIME_DIR:-/tmp}/information-wallpaper-overlay/unfocused-fps"
+SAVED="$DIR/before"
+
+current() {
+  hyprctl getoption misc:render_unfocused_fps -j 2>/dev/null | jq -r '.int // empty'
+}
+
+apply() {
+  [[ $1 =~ ^[0-9]+$ ]] || return 1
+  hyprctl eval "hl.config({ misc = { render_unfocused_fps = $1 } })" >/dev/null
+}
+
+owner=${2:-}
+[[ $owner =~ ^[a-z]+$ ]] || { echo "usage: unfocused-fps raise <owner> <fps>|restore <owner>" >&2; exit 1; }
+
+case "${1:-}" in
+raise)
+  mkdir -p "$DIR"
+  if [[ ! -f $SAVED ]]; then
+    before=$(current)
+    [[ -n $before ]] || exit 1
+    echo "$before" >"$SAVED"
+  fi
+  touch "$DIR/claim-$owner"
+  apply "${3:-60}"
+  ;;
+restore)
+  rm -f "$DIR/claim-$owner"
+  compgen -G "$DIR/claim-*" >/dev/null && exit 0
+  [[ -f $SAVED ]] || exit 0
+  apply "$(cat "$SAVED")" && rm -f "$SAVED"
+  ;;
+*)
+  echo "usage: unfocused-fps raise <owner> <fps>|restore <owner>" >&2
+  exit 1
+  ;;
+esac

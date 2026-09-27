@@ -12,6 +12,7 @@ need an app open for:
   and whether they passed.
 - **Now playing:** the cover, title, artist and how far into the track.
 - **Any installed plugin:** its menu, live, or its own `DeskTile.qml`.
+- **A workspace, live:** its windows where they are, as they are right now.
 
 The tiles sit between the wallpaper and your windows, so you see them on an
 empty workspace or in the gaps between windows. They never take a click.
@@ -158,6 +159,24 @@ makes sense on the bar, can say so in its `manifest.json`:
 It's then left out of the slots' plugin list, and a slot that already shows
 it shows the message instead of the menu.
 
+## The workspace tile
+
+**Workspace (live)** shows one workspace as a miniature of its monitor, the
+bar's strip left out: each window at its place and size, as a live capture,
+tiled ones under floating ones under fullscreen ones, and the app's name
+until its first frame. Pick the workspace in the slot's second dropdown:
+1 to 10, or a named or special one Hyprland has.
+
+The captures run only while the tile can be seen, at 60 fps: Hyprland draws
+windows on hidden workspaces at `misc:render_unfocused_fps` (15 by default),
+so while a workspace tile is in view, on the desk or the lock screen, that's
+raised to 60 through `hyprctl eval`, and the value before comes back once
+none is (`scripts/unfocused-fps` keeps it in `$XDG_RUNTIME_DIR`, so a crash
+doesn't lose it either). It's a global setting, so windows on other hidden
+workspaces render at 60 in that time too. A workspace slot starts out kept off the lock
+screen, since anyone there would see its windows; its lock button changes
+that.
+
 ## The music tile
 
 What the bar's media widget shows: the player playing (Spotify, a browser,
@@ -185,7 +204,8 @@ The popup holds everything:
 
 - **Slots:** six, one row each. A dropdown picks what the slot shows:
   **GitHub repository**, **herdr agents**, **Tasks**, **Now playing**,
-  **Installed plugin** (then which one) or **Empty**, and any of them in
+  **Installed plugin** (then which one), **Workspace (live)** (then which
+  one) or **Empty**, and any of them in
   as many slots as you like. A repository gets
   its field beside the dropdown: start typing and it suggests your own repos
   and your organizations' repos, most recently pushed first; pick one with
@@ -221,6 +241,11 @@ the locked screen can read it, so each slot has a lock button beside it in the
 popup: locked, that tile stays off the lock screen, and the others share its
 room there. A private repo or your agents' work can stay on the desktop only.
 Nothing in a tile can be clicked or typed into there either.
+
+The overlay only writes that design file where no file of that name is, and
+only reuses or removes it while it's exactly the file it wrote. A design of
+the same name that isn't the plugin's, or that you edited, is left alone;
+the popup says so.
 
 The design is `lock/LockDesign.qml` in the plugin.
 `~/.config/omarchy/lock-designs/InformationWallpaperOverlay.qml` only points
@@ -300,6 +325,10 @@ cached repo data and avatars.
   drawn into `$XDG_RUNTIME_DIR/information-wallpaper-overlay-icons/`. The
   tasks tile keeps its last tasks in
   `~/.local/state/information-wallpaper-overlay/tasks.json`.
+- **Windows:** the workspace tile reads `hyprctl clients` and `hyprctl
+  monitors` and captures that workspace's windows through the compositor,
+  only while the tile can be seen. While one is in view it raises Hyprland's
+  `misc:render_unfocused_fps` to 60, and restores it after.
 - **Processes:** the tasks tile reads command lines, times and CPU from
   `/proc`; it never touches the processes.
 - **Commands:** `gh`, `jq`, `curl`, `herdr agent list` and

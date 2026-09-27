@@ -2,7 +2,7 @@ import QtQuick
 import "Model.js" as Model
 
 // One tile, by its kind: a repo, herdr's agents, what's playing, or the
-// long tasks on the machine, or an installed plugin. The
+// long tasks on the machine, an installed plugin, or a workspace live. The
 // desk and the lock screen both place their tiles through this.
 Loader {
   id: root
@@ -15,6 +15,7 @@ Loader {
     : entry.kind === "music" ? musicTile
     : entry.kind === "tasks" ? tasksTile
     : entry.kind === "plugin" ? pluginTile
+    : entry.kind === "workspace" ? workspaceTile
     : repoTile
 
   Component {
@@ -29,6 +30,14 @@ Loader {
   Component {
     id: agentsTile
     AgentsTile {
+      widget: root.widget
+      entry: root.entry
+    }
+  }
+
+  Component {
+    id: workspaceTile
+    WorkspaceTile {
       widget: root.widget
       entry: root.entry
     }

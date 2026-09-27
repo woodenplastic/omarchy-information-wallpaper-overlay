@@ -34,6 +34,11 @@ PanelWindow {
   Item {
     id: area
     anchors.fill: parent
+    // Drawn only while it can be seen: covered by windows, nothing here is
+    // painted, and tiles that follow their visibility (plugin copies, live
+    // workspaces, the music clock) rest. Otherwise every clock tick or new
+    // sample would repaint the whole desk behind the windows.
+    visible: !root.widget || root.widget.desktopShown
 
     Repeater {
       model: root.widget ? root.widget.tiles.length : 0
