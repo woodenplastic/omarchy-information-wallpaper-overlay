@@ -246,8 +246,6 @@ BarWidget {
   }
 
   onSmoothWorkspacesChanged: applySmoothWorkspaces()
-  // Letting go at the start too clears claims a crashed shell left.
-  onIsPrimaryChanged: if (root.isPrimary && !root.smoothWorkspaces) applySmoothWorkspaces()
   Component.onDestruction: if (root.isPrimary) Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", "restore", "desk"])
 
   // ---- Installed plugins, for plugin tiles (PluginTile, scripts/plugins):
@@ -384,8 +382,9 @@ BarWidget {
   onSpecsChanged: refetchSoon.restart()
   onIsPrimaryChanged: if (isPrimary) {
     refetchSoon.restart()
-    // Sets the desk's 60 fps claim as it is now, dropping one a crash left.
-    applySmoothWorkspaces()
+    // Letting go at the start too clears claims a crashed shell left; a
+    // desk that shows a workspace raises it through smoothWorkspaces.
+    if (!smoothWorkspaces) applySmoothWorkspaces()
   }
 
   // The fetch replaces the cache by renaming a new file over it, which a
