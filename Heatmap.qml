@@ -184,6 +184,8 @@ Item {
     anchors.left: parent.left
     anchors.leftMargin: root.gridX
     y: root.gridY + root.gridHeight + root.fontSize * 0.9
+    width: Math.max(0, legend.x - root.gridX - root.fontSize)
+    elide: Text.ElideRight
     text: root.note
   }
 
