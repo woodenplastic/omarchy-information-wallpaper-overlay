@@ -6,8 +6,9 @@ import "Model.js" as Model
 
 // One repo on the desk: a borderless panel in the theme's background. On a soft
 // accent glow: the year of commits as a heatmap, the owner's avatar in the
-// accent color beside the name, the numbers, the Actions runs, and the
-// latest commits. Everything scales with the tile.
+// accent color beside the name, the numbers, the Actions runs, why the
+// latest one failed, the open pull requests, and the latest commits.
+// Everything scales with the tile.
 Rectangle {
   id: root
 
@@ -56,6 +57,24 @@ Rectangle {
     if (state === "failure") return "failed"
     if (state === "cancelled") return "cancelled"
     return run && run.conclusion ? run.conclusion.replace(/_/g, " ") : ""
+  }
+
+  // A pull request's checks, in the runs' words.
+  function checksState(state) {
+    if (state === "SUCCESS") return "success"
+    if (state === "FAILURE" || state === "ERROR") return "failure"
+    if (state === "PENDING" || state === "EXPECTED") return "running"
+    return "neutral"
+  }
+
+  function pullWords(pull) {
+    var checks = checksState(pull.checks)
+    return [
+      pull.conflicts ? "conflicts" : "",
+      checks === "success" ? "passing" : checks === "failure" ? "failing" : checks === "running" ? "checks running" : "",
+      pull.review === "APPROVED" ? "approved" : pull.review === "CHANGES_REQUESTED" ? "changes requested" : pull.review === "REVIEW_REQUIRED" ? "needs review" : "",
+      Model.relativeTime(pull.updated, root.nowMs)
+    ].filter(function(s) { return s }).join("  ·  ")
   }
 
   readonly property string ageText: {
@@ -164,6 +183,9 @@ Rectangle {
 
       readonly property real textX: heatmap.gridX
       readonly property real textWidth: heatmap.gridWidth
+      // Below the rule: the failure, the pull requests and the commits (or
+      // the live workflow) share it. Column skips hidden items' spacing.
+      readonly property real room: inner.height - heatmap.height - identity.height - 1 - spacing * 3
 
       Heatmap {
         id: heatmap
@@ -359,6 +381,156 @@ Rectangle {
         color: root.faint
       }
 
+      // ---- Why the latest run failed: the job and step, and the last
+      //      lines before the error. Not while a run is shown live.
+      Rectangle {
+        id: failure
+        readonly property var why: root.ok ? root.result.failure : null
+        readonly property real headerHeight: Math.round(root.bodySize * 1.6)
+        readonly property real lineHeight: Math.round(root.smallSize * 1.45)
+        readonly property real inset: Math.round(root.smallSize * 0.7)
+        readonly property var lines: why && why.lines ? why.lines : []
+        // At most a bit under half the room; the commits get the rest.
+        readonly property int linesShown: Math.max(0, Math.min(lines.length, Math.floor((stack.room * 0.45 - headerHeight - inset * 2) / lineHeight)))
+        // When not all fit, the ones that name the trouble come first, then
+        // the latest; in their order either way.
+        readonly property var picked: {
+          var n = linesShown, out = []
+          var telling = /error|fail|fatal|cannot|can't|not found|undefined|expected|denied|✕|×|✗/i
+          for (var i = lines.length - 1; i >= 0 && out.length < n; i--) if (telling.test(lines[i])) out.push(i)
+          for (var j = lines.length - 1; j >= 0 && out.length < n; j--) if (out.indexOf(j) === -1) out.push(j)
+          return out.sort(function(a, b) { return a - b }).map(function(k) { return lines[k] })
+        }
+        visible: !!why && !workflow.visible && stack.room >= headerHeight + commits.rowHeight * 2
+        x: stack.textX
+        width: stack.textWidth
+        height: visible ? headerHeight + (linesShown > 0 ? linesShown * lineHeight + inset * 2 : 0) : 0
+        radius: root.rounded ? root.smallSize * 0.5 : 0
+        color: root.widget ? Util.alpha(root.widget.failureColor, 0.08) : "transparent"
+
+        Label {
+          id: failureTitle
+          x: failure.inset
+          width: parent.width - failure.inset * 2
+          height: failure.headerHeight
+          verticalAlignment: Text.AlignVCenter
+          color: root.stateColor("failure")
+          text: !failure.why ? ""
+            : " " + (failure.why.workflow || "Workflow") + " failed"
+              + (failure.why.job ? " in " + failure.why.job + (failure.why.step ? " › " + failure.why.step : "") : "")
+              + (failure.why.jobs > 1 ? "  (+" + (failure.why.jobs - 1) + (failure.why.jobs === 2 ? " job)" : " jobs)") : "")
+        }
+
+        Column {
+          x: failure.inset
+          y: failure.headerHeight + failure.inset * 0.4
+          width: parent.width - failure.inset * 2
+
+          Repeater {
+            model: failure.linesShown
+
+            Label {
+              required property int index
+              width: parent.width
+              height: failure.lineHeight
+              verticalAlignment: Text.AlignVCenter
+              font.pixelSize: root.smallSize
+              color: root.dim
+              text: failure.picked[index] || ""
+            }
+          }
+        }
+      }
+
+      // ---- The newest open pull requests, as fit: checks, review, age.
+      Column {
+        id: pulls
+        readonly property var list: root.ok && root.result.pulls ? root.result.pulls : []
+        readonly property real headerHeight: Math.round(root.smallSize * 1.7)
+        readonly property real room: stack.room - (failure.visible ? failure.height + stack.spacing : 0)
+        readonly property int shown: Math.max(0, Math.min(list.length, 3, Math.floor((room * 0.6 - headerHeight) / commits.rowHeight)))
+        visible: shown > 0
+        x: stack.textX
+        width: stack.textWidth
+        readonly property real wordsWidth: Math.min(width * 0.45, root.bodySize * 0.6 * 47)
+
+        Label {
+          width: pulls.width
+          height: pulls.headerHeight
+          verticalAlignment: Text.AlignVCenter
+          font.pixelSize: root.smallSize
+          color: root.dim
+          text: !root.ok ? "" : " Pull requests  ·  " + root.result.prs + " open"
+            + (root.result.prs > pulls.shown ? ", newest " + pulls.shown + " shown" : "")
+        }
+
+        Repeater {
+          model: pulls.shown
+
+          Item {
+            id: pullRow
+            required property int index
+            readonly property var pull: pulls.list[index]
+            readonly property string checks: root.checksState(pull.checks)
+            width: pulls.width
+            height: commits.rowHeight
+            opacity: pull.draft ? 0.55 : 1
+
+            Rectangle {
+              id: checksBlock
+              anchors.verticalCenter: parent.verticalCenter
+              width: root.statSize * 0.6
+              height: width
+              radius: root.rounded ? width * 0.22 : 0
+              color: root.stateColor(pullRow.checks)
+
+              SequentialAnimation on opacity {
+                running: root.animate && pullRow.checks === "running"
+                loops: Animation.Infinite
+                onRunningChanged: if (!running) checksBlock.opacity = 1
+                NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
+                NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
+              }
+            }
+            Label {
+              id: pullNumber
+              anchors.left: checksBlock.right
+              anchors.leftMargin: root.bodySize * 0.6
+              anchors.verticalCenter: parent.verticalCenter
+              text: "#" + pullRow.pull.number
+              color: Color.accent
+            }
+            Label {
+              id: pullTitle
+              anchors.left: pullNumber.right
+              anchors.leftMargin: root.bodySize * 0.6
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.min(implicitWidth, pullRow.width - checksBlock.width - pullNumber.width - pulls.wordsWidth - pullAuthor.implicitWidth - root.bodySize * 4)
+              text: (pullRow.pull.draft ? "Draft: " : "") + pullRow.pull.title
+            }
+            Label {
+              id: pullAuthor
+              anchors.left: pullTitle.right
+              anchors.leftMargin: root.bodySize * 0.8
+              anchors.right: pullWords.left
+              anchors.rightMargin: root.bodySize
+              anchors.verticalCenter: parent.verticalCenter
+              text: pullRow.pull.author
+              color: root.dim
+            }
+            Label {
+              id: pullWords
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: pulls.wordsWidth
+              horizontalAlignment: Text.AlignRight
+              color: pullRow.pull.conflicts || pullRow.pull.review === "CHANGES_REQUESTED" ? root.stateColor("failure") : root.dim
+              text: root.pullWords(pullRow.pull)
+            }
+          }
+        }
+      }
+
       // ---- While a workflow runs (and a minute after): its jobs and steps.
       WorkflowView {
         id: workflow
@@ -389,9 +561,9 @@ Rectangle {
 
         readonly property real rowHeight: Math.round(root.bodySize * 1.75)
         readonly property var list: root.ok ? root.result.commits : []
-        // Column skips hidden items' spacing, so the room is the same with
+        // What the failure and the pull requests leave; the same with
         // either the commits or the workflow showing.
-        readonly property real room: inner.height - heatmap.height - identity.height - 1 - stack.spacing * 3
+        readonly property real room: pulls.room - (pulls.visible ? pulls.height + stack.spacing : 0)
         readonly property int shown: Math.max(0, Math.min(list.length, 16, Math.floor(room / rowHeight)))
         readonly property real shaWidth: root.bodySize * 0.6 * 8.5
         readonly property real timeWidth: root.bodySize * 0.6 * 15

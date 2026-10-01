@@ -34,6 +34,15 @@ empty workspace or in the gaps between windows. They never take a click.
 - **Actions:** the last twelve workflow runs as colored blocks, newest on the
   right, and the latest run with its result, duration and age. Green means
   passed, red failed, and yellow running, which pulses.
+- **Why it failed:** when a workflow's latest run failed, the tile says which
+  job and step, and shows the last lines before the error in a red-tinted
+  block, as many as fit (the lines that name the trouble first). It's read
+  from the run's log once per failed run, not on every fetch, and goes away
+  when the workflow passes again.
+- **Pull requests:** the newest open ones, up to three as fit, with their
+  number, title and author, a block for their checks (green passing, red
+  failing, yellow running), whether they have conflicts, the review state and
+  how long since they changed. Drafts are dimmed.
 - **Commits:** short SHA, author, message and time ("today 15:39"), as many as
   fit the tile. A merge commit shows the pull request it merged.
 - **A running workflow** takes the commits' place: the run with its number
@@ -291,6 +300,9 @@ at it, so plugin updates reach the lock screen without adding it again.
 
 The data is fetched every 5 minutes, and every 30 seconds while a workflow is
 running. Changing the repos fetches right away.
+
+A run that failed costs one more request, for its log, the first time the
+tile sees it; the pull requests come with the repo's other numbers.
 
 Without a network, as early in a boot, a repo tile keeps what the last fetch
 got and says "offline" beside its age, and the fetch is tried again every

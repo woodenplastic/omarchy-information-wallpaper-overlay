@@ -43,6 +43,13 @@ query($owner: String!, $name: String!, $qualified: String!, $hasBranch: Boolean!
     watchers { totalCount }
     owner { login avatarUrl(size: 160) }
     pullRequests(states: OPEN) { totalCount }
+    openPulls: pullRequests(states: OPEN, first: 5, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number title isDraft updatedAt reviewDecision mergeable
+        author { login }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      }
+    }
     issues(states: OPEN) { totalCount }
     latestRelease { tagName publishedAt }
     defaultBranchRef { name target { ...commits } }
@@ -98,6 +105,86 @@ last_good() {
     first(.fetched as $at | .results[]? | select(.query == $q and .ok == true)
       | .fetched //= $at | . + {stale: true, staleError: $why, offline: $offline})' "$OUT" 2>/dev/null)
   [[ -n $kept ]] && printf '%s\n' "$kept"
+}
+
+# Why a failed run failed, from the end of its log: the first failed job's
+# lines before its error, as {"job", "step", "lines", "jobs"} on stdout.
+# The log's step column often says "UNKNOWN STEP", so the step is the last
+# "Run …" group before the error then.
+FAILED_LOG_PARSER='
+import re, sys
+ansi = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+stamp = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z ?")
+# Lines with nothing to say: a table rule, a lone bracket.
+bare = re.compile(r"^[\s\-=|+*_~.:#>\[\](){}]*$")
+jobs, first = {}, None
+for raw in sys.stdin.buffer.read(16 << 20).decode("utf-8", "replace").splitlines():
+    parts = raw.split("\t", 2)
+    if len(parts) < 3:
+        continue
+    job, step, text = parts
+    text = stamp.sub("", ansi.sub("", text)).rstrip()
+    j = jobs.setdefault(job, {"lines": [], "group": False, "run": "", "step": step, "error": None, "done": False})
+    if j["done"]:
+        continue
+    if text.startswith("##[group]"):
+        j["group"] = True
+        if text.startswith("##[group]Run "):
+            j["run"] = text[len("##[group]Run "):].strip()
+        continue
+    if text.startswith("##[endgroup]"):
+        j["group"] = False
+        continue
+    if text.startswith("##[error]"):
+        message = text[len("##[error]"):].strip()
+        if message and not message.startswith("Process completed with exit code"):
+            j["lines"].append(message)
+        j["done"] = True
+        if first is None:
+            first = job
+        continue
+    if j["group"] or text.startswith("##[") or bare.match(text):
+        continue
+    j["lines"] = (j["lines"] + [text[:300]])[-6:]
+if first is not None:
+    j = jobs[first]
+    step = j["step"] if j["step"] and j["step"] != "UNKNOWN STEP" else j["run"]
+    import json
+    print(json.dumps({"job": first, "step": step, "lines": j["lines"][-6:], "jobs": sum(1 for x in jobs.values() if x["done"])}))
+'
+
+# The failure to show, into $3: the newest run among each workflow's latest
+# on the branch, when it failed, with why. Carried over from the last fetch
+# when it's the same run, so a failure costs one log download; a log that
+# wasn't ready yet is asked again on the next two fetches.
+failure_of() {
+  local repo=$1 runs=$2 out=$3 spec=$4
+  echo 'null' >"$out"
+  local failed
+  failed=$(jq -c '[.workflow_runs[]?] | group_by(.workflow_id) | map(sort_by(.created_at) | last)
+      | map(select(.status == "completed" and (.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")))
+      | sort_by(.created_at) | last // empty | {run: (.id | tostring), workflow: (.name // "")}' "$runs" 2>/dev/null)
+  [[ -n $failed ]] || return
+  local run
+  run=$(jq -r '.run' <<<"$failed")
+  if [[ -s $OUT ]]; then
+    local kept
+    kept=$(jq -c --arg q "$spec" --arg run "$run" '
+      first(.results[]? | select(.query == $q) | .failure | select(. != null and .run == $run
+        and ((.lines | length) > 0 or (.tries // 0) >= 3)))' "$OUT" 2>/dev/null)
+    if [[ -n $kept ]]; then
+      printf '%s\n' "$kept" >"$out"
+      return
+    fi
+  fi
+  local tries
+  tries=$(jq -r --arg q "$spec" --arg run "$run" \
+    'first(.results[]? | select(.query == $q) | .failure | select(. != null and .run == $run) | .tries) // 0' "$OUT" 2>/dev/null)
+  local why
+  why=$(timeout 40 gh run view "$run" --repo "$repo" --log-failed 2>/dev/null | head -c 16777216 | python3 -c "$FAILED_LOG_PARSER" 2>/dev/null)
+  [[ -n $why ]] || why='{"job": "", "step": "", "lines": [], "jobs": 0}'
+  jq -c --argjson f "$failed" --argjson tries "${tries:-0}" '$f + . + {tries: ($tries + 1)}' <<<"$why" >"$out" 2>/dev/null \
+    || echo 'null' >"$out"
 }
 
 # Commits per day since $4 (a timestamp) as {"YYYY-MM-DD": count}, into $5.
@@ -286,6 +373,10 @@ fetch_repo() {
     || echo '{"workflow_runs": []}' >"$runs"
   printf '%s' "$response" >"$TMP/${out##*/}.repo"
 
+  local failure="$TMP/${out##*/}.failure"
+  failure_of "$real_repo" "$runs" "$failure" "$spec"
+  [[ -s $failure ]] || echo 'null' >"$failure"
+
   # Jobs and steps of the runs going on, and of those that ended in the last
   # three minutes, for the desk's live view: {"<run id>": [jobs]}.
   local jobs="$TMP/${out##*/}.jobs"
@@ -302,6 +393,7 @@ fetch_repo() {
   done
 
   jq -n --slurpfile r "$TMP/${out##*/}.repo" --slurpfile runs "$runs" --slurpfile year "$year" --slurpfile jobs "$jobs" \
+    --slurpfile failure "$failure" \
     --arg branch "$shown_branch" --arg query "$spec" --arg avatar "$avatar" --arg fetched "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     ($r[0].data.repository) as $repo
     | ($repo | if .ref then .ref else .defaultBranchRef end) as $target
@@ -319,6 +411,18 @@ fetch_repo() {
         forks: $repo.forkCount,
         watchers: $repo.watchers.totalCount,
         prs: $repo.pullRequests.totalCount,
+        # The newest open pull requests, with the checks on their last commit.
+        pulls: [$repo.openPulls.nodes[]? | {
+          number,
+          title,
+          author: (.author.login // ""),
+          draft: .isDraft,
+          updated: .updatedAt,
+          review: (.reviewDecision // ""),
+          conflicts: (.mergeable == "CONFLICTING"),
+          checks: (.commits.nodes[0].commit.statusCheckRollup.state // "")
+        }],
+        failure: $failure[0],
         issues: $repo.issues.totalCount,
         release: ($repo.latestRelease.tagName // ""),
         totalCommits: $target.target.all.totalCount,
