@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Hyprland
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -34,6 +35,7 @@ Panel {
       root.widget.refreshShellHook()
       root.widget.refreshPlugins()
     }
+    root.refreshPlaces()
     root.controller.show()
   }
 
@@ -192,6 +194,96 @@ Panel {
     if (!root.drafts[index]) return
     root.drafts[index].plugin = id
     root.saveDrafts()
+  }
+
+  // ---- Folders with repos and KiCad boards to pick from (scripts/places),
+  //      looked for each time the popup opens, and the desktop's file
+  //      chooser for any other (scripts/pick).
+
+  readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
+  readonly property string otherChoice: "\u0001other"
+  property var places: ({ repoFolders: [], boards: [] })
+  property bool placesListed: false
+
+  function refreshPlaces() {
+    if (!placesProc.running) placesProc.running = true
+  }
+
+  Process {
+    id: placesProc
+    command: ["/usr/bin/python3", root.pluginDir + "/scripts/places"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var data
+        try { data = JSON.parse(text) } catch (e) { return }
+        if (data && Array.isArray(data.repoFolders) && Array.isArray(data.boards)) root.places = data
+        root.placesListed = true
+      }
+    }
+  }
+
+  // A local repos slot's choices: ~/Projects (what an empty folder means),
+  // the folders that hold repos, the one set if it's none of those, and
+  // any other.
+  function folderOptions(current) {
+    var found = root.places.repoFolders
+    var home = found.filter(function(f) { return f.value === "~/Projects" })[0]
+    var out = [{ value: "", label: home ? "~/Projects  ·  " + home.repos + " repos" : "~/Projects" }]
+    for (var i = 0; i < found.length; i++) {
+      if (found[i].value !== "~/Projects") out.push({ value: found[i].value, label: found[i].value + "  ·  " + found[i].repos + " repos" })
+    }
+    if (current && current !== "~/Projects" && !out.some(function(o) { return o.value === current })) out.push({ value: current, label: current })
+    out.push({ value: root.otherChoice, label: "Other folder…" })
+    return out
+  }
+
+  // A board slot's choices: the boards found, newest first, the one set if
+  // it's none of those, and any other.
+  function boardOptions(current) {
+    var out = [{ value: "", label: root.placesListed ? (root.places.boards.length > 0 ? "Pick a board" : "No KiCad boards found") : "Looking for boards…" }]
+    var boards = root.places.boards
+    for (var i = 0; i < boards.length; i++) out.push({ value: boards[i].value, label: boards[i].name + "  ·  " + boards[i].folder })
+    if (current && !out.some(function(o) { return o.value === current })) {
+      var parts = current.replace(/\/+$/, "").split("/")
+      out.push({ value: current, label: parts.length > 1 ? parts[parts.length - 1] + "  ·  " + parts.slice(0, -1).join("/") : current })
+    }
+    out.push({ value: root.otherChoice, label: "Other board…" })
+    return out
+  }
+
+  // The slot a choice was made for, and what it's for: "folder" or "path".
+  function setPlace(index, key, value) {
+    if (!root.drafts[index]) return
+    root.drafts[index][key] = value
+    root.saveDrafts()
+  }
+
+  // The file chooser for a slot. It's the desktop's own window, so the popup
+  // may close meanwhile; the pick still lands in the slot.
+  function pickPlace(index, key, start) {
+    if (pickProc.running) return
+    var board = key === "path"
+    pickProc.slot = index
+    pickProc.key = key
+    pickProc.kind = root.drafts[index] ? root.drafts[index].kind : ""
+    pickProc.command = ["/usr/bin/python3", root.pluginDir + "/scripts/pick", board ? "board" : "folder",
+      board ? "Pick a KiCad board" : "Pick a folder with git repos", start || "~/Projects"]
+    pickProc.running = true
+  }
+
+  Process {
+    id: pickProc
+    property int slot: -1
+    property string key: ""
+    property string kind: ""
+    stdout: StdioCollector { id: pickOut; waitForEnd: true }
+    onExited: {
+      var path = String(pickOut.text || "").trim()
+      // The popup reloads its rows when it opens again; the slot must still
+      // be the kind it was picked for.
+      if (path && root.drafts[slot] && root.drafts[slot].kind === kind) root.setPlace(slot, key, path)
+    }
   }
 
   // Dropdowns open keep the keys from the panel, like fields with focus.
@@ -457,34 +549,39 @@ Panel {
                     onPopupOpenChanged: root.openDropdowns = Math.max(0, root.openDropdowns + (popupOpen ? 1 : -1))
                   }
 
-                  TextField {
+                  Dropdown {
+                    id: folderPicker
                     visible: row.kind === "projects"
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    placeholderText: "Folder with repos: ~/Projects"
-                    text: row.draft.folder || ""
-                    foreground: Color.popups.text
-                    onTextEdited: root.drafts[row.index].folder = text
-                    onActiveFocusChanged: root.focusedFields += activeFocus ? 1 : -1
-                    onEditingFinished: root.saveDrafts()
-                    onAccepted: keyCatcher.forceActiveFocus()
-                    Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+                    showLabel: false
+                    options: root.folderOptions(row.draft.folder || "")
+                    value: row.draft.folder || ""
+                    onChanged: function(value) {
+                      // Picking sets the value; it follows the slot again.
+                      folderPicker.value = Qt.binding(function() { return row.draft.folder || "" })
+                      if (value === root.otherChoice) root.pickPlace(row.index, "folder", row.draft.folder)
+                      else root.setPlace(row.index, "folder", value)
+                    }
+                    onPopupOpenChanged: root.openDropdowns = Math.max(0, root.openDropdowns + (popupOpen ? 1 : -1))
                   }
 
-                  TextField {
+                  Dropdown {
+                    id: boardPicker
                     visible: row.kind === "board"
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    placeholderText: ".kicad_pcb, .kicad_pro or project folder"
-                    text: row.draft.path || ""
-                    foreground: Color.popups.text
-                    onTextEdited: root.drafts[row.index].path = text
-                    onActiveFocusChanged: root.focusedFields += activeFocus ? 1 : -1
-                    onEditingFinished: root.saveDrafts()
-                    onAccepted: keyCatcher.forceActiveFocus()
-                    Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+                    showLabel: false
+                    options: root.boardOptions(row.draft.path || "")
+                    value: row.draft.path || ""
+                    onChanged: function(value) {
+                      boardPicker.value = Qt.binding(function() { return row.draft.path || "" })
+                      if (value === root.otherChoice) root.pickPlace(row.index, "path", row.draft.path)
+                      else if (value) root.setPlace(row.index, "path", value)
+                    }
+                    onPopupOpenChanged: root.openDropdowns = Math.max(0, root.openDropdowns + (popupOpen ? 1 : -1))
                   }
 
                   Text {

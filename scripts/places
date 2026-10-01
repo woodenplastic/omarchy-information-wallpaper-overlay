@@ -1,0 +1,120 @@
+#!/usr/bin/python3
+"""Finds what the settings offer to pick for a slot, so nobody has to type
+a path: the folders that hold git repos (for a local repos slot) and the
+KiCad boards (for a board slot), under the home folder. Prints one JSON
+object:
+
+  {"repoFolders": [{"value": "~/Projects", "repos": 22}, ...],
+   "boards": [{"value": "~/Projects/KiCAD/Pi5-DALI-HAT/Pi5-DALI-HAT.kicad_pcb",
+               "name": "Pi5-DALI-HAT", "folder": "~/Projects/KiCAD/Pi5-DALI-HAT",
+               "saved": 1790812345}, ...]}
+
+A folder counts the repos the local repos tile would find in it (up to
+three levels down, like scripts/projects), leaving out repos inside other
+repos; it's offered with two or more, folders with the most first. Boards
+come newest first. Hidden folders, node_modules, build folders and KiCad's
+backups aren't searched.
+
+  places"""
+
+import json
+import os
+import sys
+
+HOME = os.path.expanduser("~")
+REPO_DEPTH = 5
+BOARD_DEPTH = 7
+# How deep the local repos tile looks below its folder (scripts/projects).
+TILE_DEPTH = 3
+SKIP = {"node_modules", "build", "dist", "target", "out", "venv", "__pycache__", "vendor", "Library", "go", "snap"}
+MAX_FOLDERS = 12
+MAX_BOARDS = 30
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def skipped(name):
+    return name.startswith(".") or name in SKIP or name.endswith("-backups") or name.endswith("_backups")
+
+
+def walk():
+    """(repos, boards) under the home folder: repo folders, and board files
+    with their save time."""
+    repos, boards = [], []
+    stack = [(HOME, 0)]
+    while stack:
+        path, depth = stack.pop()
+        try:
+            entries = list(os.scandir(path))
+        except OSError:
+            continue
+        names = {e.name for e in entries}
+        is_repo = ".git" in names
+        if is_repo and depth <= REPO_DEPTH:
+            repos.append(path)
+        for e in entries:
+            if e.name.endswith(".kicad_pcb") and depth <= BOARD_DEPTH:
+                try:
+                    if e.is_file():
+                        boards.append((e.path, e.stat().st_mtime))
+                except OSError:
+                    pass
+        if depth >= BOARD_DEPTH:
+            continue
+        for e in entries:
+            try:
+                if not e.is_dir(follow_symlinks=False) or skipped(e.name):
+                    continue
+            except OSError:
+                continue
+            # Into repos too: a KiCad project often lives in one.
+            stack.append((e.path, depth + 1))
+    return repos, boards
+
+
+def inside_repo(path, repos):
+    """Whether a folder is in a repo (a submodule, vendored code), the repo
+    itself included."""
+    while path.startswith(HOME + "/"):
+        if path in repos:
+            return True
+        path = os.path.dirname(path)
+    return False
+
+
+def repo_folders(repos):
+    # Repos inside other repos (submodules) aren't the tile's business.
+    top = [r for r in repos if not inside_repo(os.path.dirname(r), repos)]
+    counts = {}
+    for repo in top:
+        up = repo
+        for _ in range(TILE_DEPTH):
+            parent = os.path.dirname(up)
+            if parent == up or not parent.startswith(HOME + "/"):
+                break
+            up = parent
+            counts[up] = counts.get(up, 0) + 1
+    # A folder that holds the very same repos as the one above it adds
+    # nothing: the one above is offered.
+    out = [(p, n) for p, n in counts.items() if n >= 2 and not inside_repo(p, repos)
+           and counts.get(os.path.dirname(p)) != n]
+    out.sort(key=lambda pn: (-pn[1], pn[0].count("/"), pn[0].lower()))
+    return [{"value": tilde(p), "repos": n} for p, n in out[:MAX_FOLDERS]]
+
+
+def main():
+    repos, boards = walk()
+    repos = set(repos)
+    boards.sort(key=lambda b: -b[1])
+    print(json.dumps({
+        "repoFolders": repo_folders(repos),
+        "boards": [{"value": tilde(p), "name": os.path.splitext(os.path.basename(p))[0],
+                    "folder": tilde(os.path.dirname(p)), "saved": round(t)} for p, t in boards[:MAX_BOARDS]],
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

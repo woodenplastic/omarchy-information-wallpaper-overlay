@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+"""Asks for a folder or a KiCad board with the desktop's own file chooser
+(the xdg-desktop-portal's, as other apps get it), for a slot's "Other…"
+choice in the settings. Prints the path picked, with ~ for the home folder,
+or nothing when the chooser is cancelled. Without the portal it tries
+zenity.
+
+  pick folder|board TITLE [START_FOLDER]"""
+
+import os
+import shutil
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+# Long enough to browse; the chooser closing ends it sooner.
+TIMEOUT_MS = 15 * 60 * 1000
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def portal(kind, title, start):
+    """The path picked, "" when cancelled; None when there's no portal."""
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+    except (ImportError, ValueError):
+        return None
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error:
+        return None
+    token = "iwo%d" % os.getpid()
+    sender = bus.get_unique_name()[1:].replace(".", "_")
+    handle = "/org/freedesktop/portal/desktop/request/%s/%s" % (sender, token)
+    loop = GLib.MainLoop()
+    result = {}
+
+    def on_response(_conn, _sender, _path, _iface, _signal, params):
+        code, results = params.unpack()
+        result["code"] = code
+        result["uris"] = results.get("uris", [])
+        loop.quit()
+
+    # Subscribed before asking, so a quick answer isn't missed.
+    bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response",
+                         handle, None, Gio.DBusSignalFlags.NONE, on_response)
+    options = {
+        "handle_token": GLib.Variant("s", token),
+        "modal": GLib.Variant("b", True),
+        "current_folder": GLib.Variant("ay", (start + "\0").encode()),
+    }
+    if kind == "folder":
+        options["directory"] = GLib.Variant("b", True)
+    else:
+        options["filters"] = GLib.Variant("a(sa(us))", [("KiCad boards and projects", [(0, "*.kicad_pcb"), (0, "*.kicad_pro")])])
+    try:
+        bus.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                      "org.freedesktop.portal.FileChooser", "OpenFile",
+                      GLib.Variant("(ssa{sv})", ("", title, options)), None, Gio.DBusCallFlags.NONE, -1, None)
+    except GLib.Error:
+        return None
+    GLib.timeout_add(TIMEOUT_MS, loop.quit)
+    loop.run()
+    if result.get("code") != 0 or not result.get("uris"):
+        return ""
+    return Gio.File.new_for_uri(result["uris"][0]).get_path() or ""
+
+
+def zenity(kind, title, start):
+    if not shutil.which("zenity"):
+        return None
+    args = ["zenity", "--file-selection", "--title", title, "--filename", start.rstrip("/") + "/"]
+    if kind == "folder":
+        args.append("--directory")
+    else:
+        args += ["--file-filter", "KiCad boards and projects | *.kicad_pcb *.kicad_pro"]
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT_MS / 1000)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] not in ("folder", "board"):
+        print(__doc__.strip().splitlines()[-1].strip(), file=sys.stderr)
+        return 2
+    kind, title = sys.argv[1], sys.argv[2]
+    start = os.path.expanduser(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else HOME
+    if not os.path.isdir(start):
+        start = os.path.dirname(start) if os.path.isdir(os.path.dirname(start)) else HOME
+    path = portal(kind, title, start)
+    if path is None:
+        path = zenity(kind, title, start)
+    if path:
+        print(tilde(path))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

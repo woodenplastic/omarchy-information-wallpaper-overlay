@@ -257,7 +257,9 @@ password.
 
 **Local repos** shows the git repos in a folder and what's left in them:
 changes not committed, commits not pushed. Pick the folder in the slot's
-field; left empty, it's `~/Projects`. The folder itself counts when it's a
+second dropdown: it lists the folders in your home that hold two or more
+repos, with how many, and `~/Projects` first; **Other folder…** opens the
+desktop's file chooser for any other. The folder itself counts when it's a
 repo, and so does every repo up to three levels down. Hidden folders,
 `node_modules`, build folders and the folders inside a repo aren't searched.
 
@@ -318,9 +320,10 @@ circuit, toggles DTR and RTS, and that resets the board.
 ## The board tile
 
 **KiCad board** shows a board you're working on as a 3D render, made again
-each time you save it. Type the board in the slot's field: a `.kicad_pcb`,
-a `.kicad_pro`, or a project folder, where the newest board counts (hidden
-and `*-backups` folders left out).
+each time you save it. Pick the board in the slot's second dropdown: it
+lists the boards in your home, by name and folder, the last saved first;
+**Other board…** opens the desktop's file chooser for a `.kicad_pcb` or a
+`.kicad_pro` anywhere else.
 
 - **The render:** the board at an angle from the front left, components and
   all, trimmed to the board and as large as the tile allows. The last render
@@ -383,9 +386,8 @@ The popup holds everything:
 - **Slots:** six, one row each. A dropdown picks what the slot shows:
   **GitHub repository**, **herdr agents**, **Tasks**, **Now playing**,
   **Installed plugin** (then which one), **Workspace (live)** (then which
-  one), **Upkeep**, **Local repos** (then the folder, `~/Projects` if left
-  empty), **USB devices**, **KiCad board** (then a `.kicad_pcb`, a
-  `.kicad_pro` or the project's folder) or **Empty**, and any of them in
+  one), **Omarchy**, **Local repos** (then which folder), **USB devices**,
+  **KiCad board** (then which board) or **Empty**, and any of them in
   as many slots as you like. A repository gets
   its field beside the dropdown: start typing and it suggests your own repos
   and your organizations' repos, most recently pushed first; pick one with
