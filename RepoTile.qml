@@ -216,7 +216,11 @@ Rectangle {
         Rectangle {
           id: avatarFrame
           visible: avatar.status === Image.Ready
-          width: visible ? Math.round(info.implicitHeight * 0.92) : 0
+          // As tall as the lines beside it would be unwrapped, and at most
+          // a quarter of the width: sized from what wraps beside it, a
+          // narrow tile's wrapping grew the avatar, which narrowed and
+          // wrapped the lines more, until it filled the tile.
+          width: visible ? Math.round(Math.min(stack.textWidth * 0.25, (titleRow.height + yearLine.height * 3 + info.spacing * 3) * 0.92)) : 0
           height: width
           color: "transparent"
           border.width: Math.max(2, Math.round(width * 0.05))
@@ -299,24 +303,41 @@ Rectangle {
             }
           }
 
-          Flow {
-            width: parent.width
-            spacing: root.statSize * 0.55
+          // The numbers with their words, wrapped to two lines at most;
+          // narrower, they go without the words and dots.
+          TextMetrics {
+            id: statsMeasure
+            font.family: root.family
+            font.pixelSize: root.statSize
+            text: root.ok ? [
+              Model.compactNumber(root.result.stars) + " stars", Model.compactNumber(root.result.forks) + " forks",
+              Model.compactNumber(root.result.watchers) + " watching", Model.compactNumber(root.result.prs) + " PRs",
+              Model.compactNumber(root.result.issues) + " issues", root.result.release
+            ].join(" · ") : ""
+          }
 
-            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.stars) : ""; word: "stars" }
-            Dot {}
-            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.forks) : ""; word: "forks" }
-            Dot {}
-            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.watchers) : ""; word: "watching" }
-            Dot {}
-            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.prs) : ""; word: "PRs" }
-            Dot {}
-            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.issues) : ""; word: "issues" }
-            Dot { visible: root.ok && root.result.release !== "" }
+          Flow {
+            id: stats
+            // Each number's glyph and its gap besides the words.
+            readonly property bool compact: statsMeasure.advanceWidth + 6 * root.statSize * 1.4 > width * 2
+            width: parent.width
+            spacing: root.statSize * (stats.compact ? 0.9 : 0.55)
+
+            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.stars) : ""; word: stats.compact ? "" : "stars" }
+            Dot { visible: !stats.compact }
+            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.forks) : ""; word: stats.compact ? "" : "forks" }
+            Dot { visible: !stats.compact }
+            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.watchers) : ""; word: stats.compact ? "" : "watching" }
+            Dot { visible: !stats.compact }
+            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.prs) : ""; word: stats.compact ? "" : "PRs" }
+            Dot { visible: !stats.compact }
+            Stat { glyph: ""; value: root.ok ? Model.compactNumber(root.result.issues) : ""; word: stats.compact ? "" : "issues" }
+            Dot { visible: !stats.compact && root.ok && root.result.release !== "" }
             Stat { visible: root.ok && root.result.release !== ""; glyph: ""; value: root.ok ? root.result.release : "" }
           }
 
           Label {
+            id: yearLine
             width: parent.width
             color: root.dim
             font.pixelSize: root.statSize
