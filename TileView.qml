@@ -11,6 +11,8 @@ Loader {
   // The bar widget, or the lock screen's feed: settings, data and look.
   property var widget: null
   property var entry: ({})
+  // Whether the desk it's on can be seen (Desk.qml).
+  property bool shown: true
 
   sourceComponent: entry.kind === "herdr" ? agentsTile
     : entry.kind === "music" ? musicTile
@@ -28,6 +30,7 @@ Loader {
     RepoTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
       result: root.widget ? Model.resultFor(root.widget.results, root.entry) : null
     }
   }
@@ -37,6 +40,7 @@ Loader {
     AgentsTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -45,6 +49,7 @@ Loader {
     WorkspaceTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -53,6 +58,7 @@ Loader {
     PluginTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -61,6 +67,7 @@ Loader {
     TasksTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -69,6 +76,7 @@ Loader {
     MusicTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -77,6 +85,7 @@ Loader {
     UpkeepTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -85,6 +94,7 @@ Loader {
     ProjectsTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -93,6 +103,7 @@ Loader {
     DevicesTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 
@@ -101,6 +112,7 @@ Loader {
     BoardTile {
       widget: root.widget
       entry: root.entry
+      shown: root.shown
     }
   }
 }

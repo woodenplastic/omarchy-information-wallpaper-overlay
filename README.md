@@ -404,6 +404,12 @@ The popup holds everything:
   its DRC or ERC finds errors. A tile stays a minute after its news is over,
   so the desk doesn't rearrange between two builds. Now playing and plugin
   tiles are always shown.
+- **Displays:** with more than one connected, which ones show the desk,
+  one or several; each gets the same tiles, laid out for its own size and
+  shape, and its animations and live tiles run only while its desktop can
+  be seen. Displays are remembered by name, so one that's unplugged comes
+  back when it's plugged in again; with none of the picked ones connected,
+  the first display shows the desk. Until you pick, it's the first.
 - **Opacity** of the tiles.
 - **Animations:** the twinkling cells, today's breathing frame and the
   pulsing agents.
@@ -492,7 +498,8 @@ omarchy plugin add https://github.com/woodenplastic/omarchy-information-wallpape
 Then click the four-tiles icon (behind the tray's arrow) and pick what each
 slot shows.
 
-The tiles only appear on the first monitor, drawn by the widget there. If
+The tiles appear on the first monitor until you pick others under
+**Displays**; the widget on the first monitor's bar draws them on each. If
 you remove the widget from the bar, the tiles go with it.
 
 ## Remove

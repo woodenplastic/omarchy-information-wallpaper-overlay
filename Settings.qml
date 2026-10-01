@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
@@ -7,8 +8,8 @@ import "Model.js" as Model
 // Settings popup under the bar icon: six slots, each picked from a dropdown
 // (a repo with an optional branch, herdr's agents, tasks, what's playing, a
 // plugin, a workspace, the machine's upkeep, local repos, USB devices, a
-// KiCad board, or nothing), where they land on the desk, and how the tiles
-// look.
+// KiCad board, or nothing), where they land on the desk, which displays
+// show it, and how the tiles look.
 Panel {
   id: root
   moduleName: "woodenplastic.information-wallpaper-overlay"
@@ -678,6 +679,32 @@ Panel {
           onClicked: if (root.widget) root.widget.setShellHook(root.widget.shellHook !== "on")
         }
 
+        // ---- Which displays show the desk, with more than one connected.
+        PanelSeparator { width: parent.width; visible: Quickshell.screens.length > 1 }
+
+        PanelSectionHeader {
+          visible: Quickshell.screens.length > 1
+          text: "DISPLAYS"
+          foreground: Color.popups.text
+        }
+
+        Repeater {
+          model: Quickshell.screens.length > 1 ? Quickshell.screens : []
+
+          Toggle {
+            required property var modelData
+            readonly property bool on: !!root.widget && root.widget.deskScreenNames.indexOf(modelData.name) !== -1
+            width: parent.width
+            label: modelData.name + (modelData.model ? "  ·  " + modelData.model : "")
+            description: modelData.width + " × " + modelData.height + (Quickshell.screens[0] === modelData ? ", the first display" : "")
+            checked: on
+            // The last display showing the desk stays on.
+            enabled: !on || root.widget.deskScreenNames.length > 1
+            foreground: Color.popups.text
+            onClicked: if (root.widget) root.widget.setDisplayShown(modelData.name, !on)
+          }
+        }
+
         PanelSeparator { width: parent.width }
 
         PanelSectionHeader {
@@ -804,7 +831,9 @@ Panel {
             if (!root.widget) return ""
             if (root.widget.fetchError) return root.widget.fetchError
             var parts = root.widget.repos.length > 0 ? ["Signed in through the gh CLI"] : []
-            parts.push("tiles on the first monitor")
+            var names = root.widget.deskScreenNames
+            parts.push(Quickshell.screens.length < 2 ? "tiles on the desktop"
+              : names.length === 1 ? "tiles on " + names[0] : "tiles on " + names.join(", "))
             if (root.widget.fetching) parts.push("updating…")
             else if (root.widget.offline) parts.push("offline, trying again every minute")
             else if (root.widget.fetchedAt) parts.push("updated " + Model.relativeTime(root.widget.fetchedAt, root.widget.nowMs))

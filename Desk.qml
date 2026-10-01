@@ -4,16 +4,21 @@ import Quickshell.Wayland
 import qs.Commons
 import "Model.js" as Model
 
-// The tiles on the first monitor's desktop: a layer between the
-// wallpaper and the windows, filling the area the bar leaves free, with
-// Hyprland's gap between tiles and its rounding. Clicks pass through.
+// The tiles on one display's desktop: a layer between the wallpaper and
+// the windows, filling the area the bar leaves free, with Hyprland's gap
+// between tiles and its rounding. Clicks pass through. There's one for
+// each display the desk is on.
 PanelWindow {
   id: root
 
   property var widget: null
+  property var deskScreen: null
 
-  screen: widget ? widget.primaryScreen : null
-  visible: !!widget
+  // No windows on this display's workspace.
+  readonly property bool shown: !!widget && widget.screenShown(deskScreen)
+
+  screen: deskScreen
+  visible: !!widget && !!deskScreen
   color: "transparent"
 
   anchors { top: true; bottom: true; left: true; right: true }
@@ -38,7 +43,7 @@ PanelWindow {
     // painted, and tiles that follow their visibility (plugin copies, live
     // workspaces, the music clock) rest. Otherwise every clock tick or new
     // sample would repaint the whole desk behind the windows.
-    visible: !root.widget || root.widget.desktopShown
+    visible: !root.widget || root.shown
 
     Repeater {
       model: root.widget ? root.widget.deskTiles.length : 0
@@ -54,6 +59,7 @@ PanelWindow {
 
         widget: root.widget
         entry: root.widget.deskTiles[index]
+        shown: root.shown
       }
     }
   }

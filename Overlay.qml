@@ -11,9 +11,10 @@ import "Model.js" as Model
 // herdr's agents, what's playing and the long tasks on the machine.
 //
 // The bar has one instance of this widget per monitor. The one on the first
-// monitor fetches (scripts/fetch through the gh CLI) and draws the desk; the
-// fetch lands in a cache file that every instance watches, so each bar's dot
-// agrees and the desk shows the last data right after a shell restart.
+// monitor fetches (scripts/fetch through the gh CLI) and draws the desk on
+// each display picked for it; the fetch lands in a cache file that every
+// instance watches, so each bar's dot agrees and the desk shows the last
+// data right after a shell restart.
 BarWidget {
   id: root
   moduleName: "woodenplastic.information-wallpaper-overlay"
@@ -95,6 +96,31 @@ BarWidget {
     repeat: true
     running: true
     onTriggered: if (root.resolveScreen()) stop()
+  }
+
+  // ---- The displays the desk is on: those picked in the popup that are
+  //      connected, by name; the first monitor when none of them is.
+
+  readonly property var pickedDisplays: Array.isArray(option("displays", null)) ? option("displays", []) : []
+  readonly property var deskScreens: {
+    var all = Quickshell.screens
+    var out = []
+    for (var i = 0; i < all.length; i++) if (root.pickedDisplays.indexOf(all[i].name) !== -1) out.push(all[i])
+    if (out.length === 0 && all.length > 0) out.push(all[0])
+    return out
+  }
+  readonly property var deskScreenNames: deskScreens.map(function(s) { return s.name })
+
+  // Whether a display's desktop can be seen: no windows on its workspace.
+  function screenShown(screen) {
+    var monitor = screen ? Hyprland.monitorFor(screen) : null
+    return !!monitor && !!monitor.activeWorkspace && monitor.activeWorkspace.toplevels.values.length === 0
+  }
+
+  function setDisplayShown(name, on) {
+    var next = root.deskScreenNames.filter(function(n) { return n !== name })
+    if (on) next.push(name)
+    if (next.length > 0) root.setSetting("displays", next)
   }
 
   Connections {
@@ -559,19 +585,22 @@ BarWidget {
     refetchSoon.restart()
   }
 
-  // Sparks and breathing run only while the desk can be seen: no windows on
-  // the first monitor's workspace.
-  readonly property var deskMonitor: primaryScreen ? Hyprland.monitorFor(primaryScreen) : null
-  readonly property bool desktopShown: !!deskMonitor && !!deskMonitor.activeWorkspace
-    && deskMonitor.activeWorkspace.toplevels.values.length === 0
+  // Sparks and breathing run only while a desk can be seen: no windows on
+  // its display's workspace. Each desk tells its own tiles whether it's
+  // seen (Desk.qml); these say whether any is.
+  readonly property bool desktopShown: deskScreens.some(screenShown)
   readonly property bool animate: animations && desktopShown
 
-  // ---- Desk: the tiles on the first monitor's desktop.
+  // ---- Desk: the tiles on the desktop of each display picked.
 
-  Loader {
-    active: root.isPrimary && root.deskTiles.length > 0
-    source: Qt.resolvedUrl("Desk.qml")
-    onLoaded: item.widget = root
+  Variants {
+    model: root.isPrimary && root.deskTiles.length > 0 ? root.deskScreens : []
+
+    Desk {
+      required property var modelData
+      deskScreen: modelData
+      widget: root
+    }
   }
 
   // ---- Settings popup, with the shape the bar routes panels by.

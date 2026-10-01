@@ -19,8 +19,10 @@ Rectangle {
   default property alias content: inner.data
   readonly property Item area: inner
 
+  // Whether the desk this tile is on can be seen; a desk per display.
+  property bool shown: true
   readonly property real nowMs: widget ? widget.nowMs : Date.now()
-  readonly property bool animate: !!widget && widget.animate
+  readonly property bool animate: !!widget && widget.animate && shown
 
   readonly property color fg: Color.foreground
   readonly property color dim: Util.alpha(Color.foreground, 0.55)
