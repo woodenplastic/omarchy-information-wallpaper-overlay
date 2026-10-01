@@ -99,6 +99,24 @@ its project folder, the agent that started it, and while it runs, its busy
 jobs, CPU and time; a build's compilers count as its jobs, not as tasks of
 their own. **Also watch** in the settings adds your own programs by name.
 
+While there's room, a running task gets a second line:
+
+- **What it's doing now:** `compiling wifi_mgr.c`, `building serde`,
+  `linking firmware.elf`, `writing flash`, `indexing objects`, or else the
+  name of the program busy under it (`mkinitcpio`).
+- **How far along:** a bar measured against how long the same task in the
+  same folder took the last three times, with "~3m left", or "over the usual
+  3m 12s" once it takes longer. Runs that failed or were cancelled don't
+  count, and a task seen for the first time gets no bar.
+  The times are kept in
+  `~/.local/state/information-wallpaper-overlay/durations.json`.
+- **Its CPU over the last two minutes**, as a small chart of the whole
+  machine: a build that uses every core fills it, one stuck on a single core
+  stays low.
+
+When the tasks don't all fit, the ended ones are left out first, then the
+running ones lose their second line.
+
 The last 20 tasks that ended stay below the running ones, newest first,
 and are kept in `~/.local/state/information-wallpaper-overlay/tasks.json`
 across restarts: green when it passed, red when it
