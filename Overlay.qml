@@ -264,6 +264,36 @@ BarWidget {
   readonly property var devicesFeed: devicesWatcher
   readonly property var boardFeed: boardWatcher
 
+  // ---- The tiles the desk shows: slots set to stay off it while they have
+  //      nothing to show are left out then, and the others share the room.
+
+  readonly property bool anyQuiet: root.tiles.some(function(t) { return t.quiet === true })
+  property var quietHeld: ({})
+  property var deskTiles: []
+
+  function updateDesk() {
+    var shown = root.tiles
+    if (root.anyQuiet) {
+      var r = Model.shownTiles(root.tiles, {
+        results: root.results, liveRuns: root.liveRuns,
+        herdrCounts: herdrFeed.counts, tasks: tasksWatcher.tasks, clients: workspaceWatcher.clients,
+        upkeep: upkeepWatcher.output, projects: projectsWatcher.output, devices: devicesWatcher.output, boards: boardWatcher.output
+      }, root.quietHeld, Date.now())
+      root.quietHeld = r.held
+      shown = r.tiles
+    }
+    if (JSON.stringify(shown) !== JSON.stringify(root.deskTiles)) root.deskTiles = shown
+  }
+
+  onTilesChanged: updateDesk()
+
+  Timer {
+    running: root.anyQuiet
+    repeat: true
+    interval: 2000
+    onTriggered: root.updateDesk()
+  }
+
   // ---- Windows and monitors, for workspace tiles.
 
   WorkspaceFeed {
@@ -523,6 +553,7 @@ BarWidget {
 
   Component.onCompleted: {
     windowsSoon.restart()
+    updateDesk()
     refreshLook()
     refreshPlugins()
     refetchSoon.restart()
@@ -538,7 +569,7 @@ BarWidget {
   // ---- Desk: the tiles on the first monitor's desktop.
 
   Loader {
-    active: root.isPrimary && root.tiles.length > 0
+    active: root.isPrimary && root.deskTiles.length > 0
     source: Qt.resolvedUrl("Desk.qml")
     onLoaded: item.widget = root
   }

@@ -56,10 +56,10 @@ DesignBase {
       NumberAnimation { duration: 450; easing.type: Easing.OutCubic }
     }
 
-    readonly property var rects: Model.tileRects(feed.tiles.length, width, height, feed.gap)
+    readonly property var rects: Model.tileRects(feed.shownTiles.length, width, height, feed.gap)
 
     Repeater {
-      model: feed.tiles.length
+      model: feed.shownTiles.length
 
       Item {
         required property int index
@@ -74,7 +74,7 @@ DesignBase {
           anchors.fill: parent
           active: !lock.snapshotMode
           widget: feed
-          entry: feed.tiles[index]
+          entry: feed.shownTiles[index]
         }
 
         // A boot screen shows the same panes, empty: what's in them would

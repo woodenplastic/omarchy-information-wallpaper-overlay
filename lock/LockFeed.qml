@@ -152,6 +152,38 @@ Item {
 
   readonly property var workspaceFeed: workspaceWatcher
 
+  // ---- The tiles shown: as on the desk, slots set to stay away while they
+  //      have nothing to show are left out then. The thumbnails, which have
+  //      no data, show them all.
+
+  readonly property bool anyQuiet: root.tiles.some(function(t) { return t.quiet === true })
+  property var quietHeld: ({})
+  property var shownTiles: []
+
+  function updateShown() {
+    var shown = root.tiles
+    if (root.anyQuiet && root.live) {
+      var r = Model.shownTiles(root.tiles, {
+        results: root.results, liveRuns: root.liveRuns,
+        herdrCounts: herdrFeed.counts, tasks: tasksWatcher.tasks, clients: workspaceWatcher.clients,
+        upkeep: upkeepWatcher.output, projects: projectsWatcher.output, devices: devicesWatcher.output, boards: boardWatcher.output
+      }, root.quietHeld, Date.now())
+      root.quietHeld = r.held
+      shown = r.tiles
+    }
+    if (JSON.stringify(shown) !== JSON.stringify(root.shownTiles)) root.shownTiles = shown
+  }
+
+  onTilesChanged: updateShown()
+  onLiveChanged: updateShown()
+
+  Timer {
+    running: root.anyQuiet && root.live
+    repeat: true
+    interval: 2000
+    onTriggered: root.updateShown()
+  }
+
   // A workspace on the real lock screen runs at 60 fps: Hyprland draws
   // windows on hidden workspaces at misc:render_unfocused_fps (15 unless
   // set), so that's raised while it's shown and put back after
@@ -163,7 +195,10 @@ Item {
   }
 
   onSmoothWorkspacesChanged: applySmoothWorkspaces()
-  Component.onCompleted: if (smoothWorkspaces) applySmoothWorkspaces()
+  Component.onCompleted: {
+    if (smoothWorkspaces) applySmoothWorkspaces()
+    updateShown()
+  }
   Component.onDestruction: if (smoothWorkspaces) Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", "restore", "lock"])
 
   // ---- Installed plugins, for plugin tiles (see the bar widget): listed

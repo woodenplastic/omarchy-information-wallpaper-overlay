@@ -382,6 +382,18 @@ The popup holds everything:
 - **The layout** above the slots shows where each filled slot lands. Empty
   slots are skipped, so the filled ones share the desk in slot order; with
   three, the first is the large one.
+- **Only while there's something to show:** a slot's eye button keeps that
+  tile off the desk while it has nothing to say, and the others share the
+  room; it comes back by itself. A repo then shows while a workflow runs or
+  its latest run failed, the agents while one works or waits for you, tasks
+  while one runs and for five minutes after one ends, a workspace while it
+  has windows, upkeep while a reboot is due, a unit failed or a disk runs
+  low (updates alone don't count), local repos while one touched in the
+  last two weeks has changes or commits not pushed, USB devices while a dev
+  board is plugged in, and a board for 30 minutes after it's saved or while
+  its DRC or ERC finds errors. A tile stays a minute after its news is over,
+  so the desk doesn't rearrange between two builds. Now playing and plugin
+  tiles are always shown.
 - **Opacity** of the tiles.
 - **Animations:** the twinkling cells, today's breathing frame and the
   pulsing agents.

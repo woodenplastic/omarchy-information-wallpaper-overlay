@@ -51,7 +51,7 @@ Panel {
     var list = root.widget ? root.widget.slots : Model.slotList([])
     root.drafts = list.map(function(e) {
       return { kind: e.kind, repo: e.repo || "", branch: e.branch || "", tools: (e.tools || []).join(", "), plugin: e.plugin || "", workspace: e.workspace || "",
-        folder: e.folder || "", path: e.path || "", hideOnLock: e.hideOnLock === true }
+        folder: e.folder || "", path: e.path || "", hideOnLock: e.hideOnLock === true, quiet: e.quiet === true }
     })
   }
 
@@ -66,6 +66,7 @@ Panel {
         : d.kind === "board" ? { kind: "board", path: d.path.trim() }
         : { kind: d.kind }
       if (d.kind !== "empty" && d.hideOnLock) slot.hideOnLock = true
+      if (Model.QUIET_KINDS.indexOf(d.kind) !== -1 && d.quiet) slot.quiet = true
       return slot
     })
     if (JSON.stringify(Model.slotList(list)) !== JSON.stringify(root.widget.slots)) root.widget.setSetting("tiles", list)
@@ -79,13 +80,20 @@ Panel {
     // A live workspace starts off the lock screen: anyone there would see
     // its windows.
     next[index] = { kind: kind, repo: "", branch: "", tools: "", plugin: "", workspace: "", folder: "", path: "",
-      hideOnLock: kind === "workspace" ? true : root.drafts[index].hideOnLock === true }
+      hideOnLock: kind === "workspace" ? true : root.drafts[index].hideOnLock === true, quiet: false }
     root.drafts = next
     root.saveDrafts()
     if (kind === "github") Qt.callLater(function() {
       var row = rows.itemAt(index)
       if (row) row.focusRepo()
     })
+  }
+
+  // Keeps a slot off the desk while it has nothing to show, or always on it.
+  function toggleQuiet(index) {
+    if (!root.drafts[index]) return
+    root.drafts[index].quiet = !root.drafts[index].quiet
+    root.saveDrafts()
   }
 
   // Keeps a slot off the lock screen, or puts it back.
@@ -378,7 +386,7 @@ Panel {
                 // What the kind needs: a repo, more tools to watch, or a note.
                 Item {
                   id: detail
-                  width: parent.width - slotNumber.width - kindPicker.width - lockButton.width - parent.spacing * 3
+                  width: parent.width - slotNumber.width - kindPicker.width - quietButton.width - lockButton.width - parent.spacing * 4
                   height: kindPicker.height
 
                   TextField {
@@ -495,6 +503,20 @@ Panel {
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                   }
+                }
+
+                // Always on the desk, or only while it has something to show:
+                // a run going, agents at work, a task running, a dirty repo…
+                PanelActionButton {
+                  id: quietButton
+                  readonly property bool can: Model.QUIET_KINDS.indexOf(row.kind) !== -1
+                  anchors.verticalCenter: parent.verticalCenter
+                  opacity: can ? 1 : 0
+                  enabled: can
+                  iconText: row.draft.quiet ? "\uf070" : "\uf06e"
+                  tooltipText: row.draft.quiet ? "Only while there's something to show" : "Always on the desk"
+                  foreground: row.draft.quiet ? Color.accent : root.dim
+                  onClicked: root.toggleQuiet(row.index)
                 }
 
                 // On the lock screen or not: kept off, the tile leaves the

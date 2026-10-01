@@ -29,7 +29,7 @@ PanelWindow {
 
   // Hyprland puts gaps_in around each window, so neighbors sit twice apart.
   readonly property int gap: widget ? widget.gapsIn * 2 : 10
-  readonly property var rects: widget ? Model.tileRects(widget.tiles.length, area.width, area.height, gap) : []
+  readonly property var rects: widget ? Model.tileRects(widget.deskTiles.length, area.width, area.height, gap) : []
 
   Item {
     id: area
@@ -41,7 +41,7 @@ PanelWindow {
     visible: !root.widget || root.widget.desktopShown
 
     Repeater {
-      model: root.widget ? root.widget.tiles.length : 0
+      model: root.widget ? root.widget.deskTiles.length : 0
 
       TileView {
         required property int index
@@ -53,7 +53,7 @@ PanelWindow {
         height: Math.round(rect.h)
 
         widget: root.widget
-        entry: root.widget.tiles[index]
+        entry: root.widget.deskTiles[index]
       }
     }
   }

@@ -3,6 +3,8 @@
 var MAX_TILES = 6
 // What a slot can show.
 var KINDS = ["github", "herdr", "music", "tasks", "plugin", "workspace", "upkeep", "projects", "devices", "board"]
+// The kinds that can stay off the desk while there's nothing to show.
+var QUIET_KINDS = ["github", "herdr", "tasks", "workspace", "upkeep", "projects", "devices", "board"]
 var ACTIVITY_DAYS = 28
 
 // "owner/repo" from what people paste: a GitHub URL, an SSH remote or the
@@ -26,8 +28,9 @@ function normalizeBranch(text) {
 // { kind: "music" }, { kind: "tasks", tools }, { kind: "plugin", plugin },
 // { kind: "workspace", workspace }, { kind: "upkeep" }, { kind: "projects",
 // folder }, { kind: "devices" }, { kind: "board", path } or { kind: "empty" };
-// any filled one can carry hideOnLock: true, to stay off the lock screen.
-// A repo
+// any filled one can carry hideOnLock: true, to stay off the lock screen,
+// and one of QUIET_KINDS quiet: true, to stay off the desk while it has
+// nothing to show. A repo
 // slot keeps what was typed even before it's a repo, so the slot stays one.
 // A bare repo string or an entry without a kind is a repo; a shorter list
 // fills the first slots. Any kind can fill any number of slots.
@@ -48,6 +51,7 @@ function slotList(value) {
       : kind === "board" ? { kind: kind, path: String(entry.path || "").trim() }
       : { kind: kind }
     if (kind !== "empty" && entry.hideOnLock === true) slot.hideOnLock = true
+    if (QUIET_KINDS.indexOf(kind) !== -1 && entry.quiet === true) slot.quiet = true
     out.push(slot)
   }
   while (out.length < MAX_TILES) out.push({ kind: "empty" })
@@ -118,6 +122,66 @@ function slotArgs(tiles, kind, key) {
     if (out.indexOf(value) === -1) out.push(value)
   }
   return out
+}
+
+// Whether a tile has something to show, for slots set to stay off the desk
+// otherwise. `feeds` has what the tiles read: results and liveRuns (repos),
+// herdrCounts, tasks, upkeep, projects, devices, boards, clients.
+var QUIET_TASK_HOLD_S = 300
+var BOARD_FRESH_S = 1800
+
+function tileHasNews(entry, feeds) {
+  if (QUIET_KINDS.indexOf(entry.kind) === -1 || entry.quiet !== true) return true
+  if (entry.kind === "github") {
+    var result = resultFor(feeds.results || [], entry)
+    return !!result && (feeds.liveRuns(result).length > 0 || overallState([result]) === "failure")
+  }
+  if (entry.kind === "herdr") {
+    var c = feeds.herdrCounts || {}
+    return (c.working || 0) + (c.blocked || 0) > 0
+  }
+  if (entry.kind === "tasks") {
+    return (feeds.tasks || []).some(function(t) { return t.state === "running" || t.ago < QUIET_TASK_HOLD_S })
+  }
+  if (entry.kind === "workspace") {
+    return (feeds.clients || []).some(function(c) { return String(c.ws) === entry.workspace || c.wsName === entry.workspace })
+  }
+  if (entry.kind === "upkeep") return !!feeds.upkeep && feeds.upkeep.attention === true
+  if (entry.kind === "devices") return !!feeds.devices && feeds.devices.attention === true
+  if (entry.kind === "projects") {
+    var folders = feeds.projects && feeds.projects.folders || {}
+    return !!folders[entry.folder || ""] && folders[entry.folder || ""].attention === true
+  }
+  if (entry.kind === "board") {
+    // The watcher only speaks when something changes, so "saved lately"
+    // is worked out here, where time passes.
+    var b = (feeds.boards && feeds.boards.boards || {})[entry.path]
+    if (!b) return false
+    var drc = b.drc || {}, erc = b.erc || {}
+    return !!b.error || drc.errors > 0 || drc.unconnected > 0 || erc.errors > 0
+      || (b.saved > 0 && Date.now() / 1000 - b.saved < BOARD_FRESH_S)
+  }
+  return true
+}
+
+// A quiet slot that had news stays a minute more, so the desk doesn't
+// rearrange between two builds. `held` maps a slot's key to when it last had
+// news; returns the tiles to show and the map to keep.
+var QUIET_HOLD_MS = 60000
+
+function tileKey(entry) {
+  return JSON.stringify(entry)
+}
+
+function shownTiles(tiles, feeds, held, nowMs) {
+  var shown = [], next = {}
+  for (var i = 0; i < tiles.length; i++) {
+    var key = tileKey(tiles[i])
+    if (tileHasNews(tiles[i], feeds)) next[key] = nowMs
+    else if (held[key] !== undefined && nowMs - held[key] < QUIET_HOLD_MS) next[key] = held[key]
+    if (next[key] !== undefined || tiles[i].quiet !== true) shown.push(tiles[i])
+  }
+  return { tiles: shown, held: next }
 }
 
 // The GitHub tiles among them, which the fetch covers.
