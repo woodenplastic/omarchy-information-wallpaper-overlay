@@ -4,36 +4,45 @@ after it's saved, its DRC and its schematic's ERC, and a few facts read from
 the file. Prints one JSON line at the start and whenever something changes:
 
   {"boards": {"<path as given>": {"name", "file", "image", "version",
-              "saved", "busy", "drc", "erc", "layers", "footprints",
-              "width", "height", "error", "attention"}}}
+              "views", "viewCount", "viewsVersion", "saved", "busy", "drc", "erc",
+              "layers", "footprints", "width", "height", "error",
+              "attention"}}}
 
   board <path> [<path> ...]
+  board --views <board.kicad_pcb> <out folder>
 
 A path is a .kicad_pcb, a .kicad_pro, or a project folder, where the newest
 .kicad_pcb counts (hidden and *-backups folders left out); it may start
 with ~. A save is acted on once the file has stayed the same for two
-seconds: the render first, then the DRC; a changed schematic gets an ERC.
-One kicad-cli runs at a time, under nice and ionice. Renders, reports and
-what they were made from are kept in
-$XDG_CACHE_HOME/information-wallpaper-overlay/boards/, so a restart only
-redoes what changed. kicad-cli works on a folder of links to the
+seconds: the render first, then the DRC; a changed schematic gets an ERC;
+then the views: the board from six sides, top and bottom, rendered at
+high quality one after another, cropped alike and saved as a folder of
+WebP stills (board --views does that one). One job runs at a time,
+under nice and ionice. Renders, reports and what they were made from are
+kept in $XDG_CACHE_HOME/information-wallpaper-overlay/boards/, so a
+restart only redoes what changed. kicad-cli works on a folder of links to the
 project's files there, which keeps its lock files out of the project.
 
 image is the PNG, trimmed to the board when Pillow is there, and version
-changes with it. saved is when the board or
-its schematic was last saved (epoch seconds). busy is "rendering",
-"checking" or "". drc is {errors, warnings, unconnected, parity} and erc
+changes with it. views is the views' folder once there's one for the
+board as it is now ("" before, and without Pillow), holding viewCount
+stills named 0.webp on, with viewsVersion.
+saved is when the board or its schematic was last saved (epoch seconds).
+busy is "rendering", "checking", "views" or "". drc is {errors, warnings, unconnected, parity} and erc
 {errors, warnings}, null until known. width and height are the Edge.Cuts
 outline in mm. attention: saved in the last 30 minutes, or DRC or ERC
 errors, or an error; a tile shown only when there's something to show
 uses it. The watcher exits when stdin closes, with the shell."""
 
+import ctypes
+import glob
 import hashlib
 import json
 import os
 import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -45,7 +54,22 @@ FOLDER_EVERY_S = 30
 JOB_TIMEOUT_S = 300
 WIDTH, HEIGHT = 1600, 1000
 # Angled from the front left, the whole board in the frame.
-VIEW = ["--rotate", "-35,0,25", "--zoom", "0.9", "--quality", "basic", "--background", "transparent"]
+TILT, AROUND = -35, 25
+VIEW = ["--rotate", "%d,0,%d" % (TILT, AROUND), "--zoom", "0.9", "--quality", "basic", "--background", "transparent"]
+# The views: the board from six sides, the first where the still looks
+# from, four round the top and two of the bottom (tilted over), taken in
+# turn so top and bottom alternate; further out than the still, so no side
+# runs off the frame. Each at high quality (shadows and all), one at a
+# time since one uses every core, cropped to the same box so the board
+# keeps its size from view to view, at most this wide. VIEWS_STYLE names
+# how they're made; views made another way are made again.
+VIEW_ANGLES = [(TILT, AROUND), (TILT, AROUND + 90), (TILT + 180, AROUND + 180),
+               (TILT, AROUND + 180), (TILT, AROUND + 270), (TILT + 180, AROUND)]
+VIEWS_W, VIEWS_H = 1600, 1000
+VIEWS_ZOOM = "0.7"
+VIEWS_STYLE = "six-high"
+VIEWS_MAX_W = 1000
+VIEWS_TIMEOUT_S = 1200
 
 try:
     from PIL import Image
@@ -147,6 +171,58 @@ def trim(png):
         im.crop(box).save(png)
 
 
+def views(pcb, out):
+    """Renders the board from each of VIEW_ANGLES and saves them in the
+    folder out as 0.webp on, every one cropped to the same box. Exits 1
+    when a view couldn't be made."""
+    if Image is None:
+        return 1
+    shots = out + ".shots"
+    shutil.rmtree(shots, ignore_errors=True)
+    os.makedirs(shots)
+    try:
+        paths = []
+        for i, (tilt, around) in enumerate(VIEW_ANGLES):
+            path = os.path.join(shots, "%d.png" % i)
+            try:
+                subprocess.run(["kicad-cli", "pcb", "render", "-o", path, "-w", str(VIEWS_W), "-h", str(VIEWS_H),
+                                "--rotate", "%g,0,%g" % (tilt % 360, around % 360),
+                                "--zoom", VIEWS_ZOOM, "--quality", "high",
+                                "--background", "transparent", pcb],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if not os.path.exists(path):
+                return 1
+            paths.append(path)
+        frames = [Image.open(p).convert("RGBA") for p in paths]
+        box = None
+        for im in frames:
+            b = im.getchannel("A").getbbox()
+            if b:
+                box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3]))
+        if box is None:
+            return 1
+        margin = round(max(box[2] - box[0], box[3] - box[1]) * 0.03)
+        w, h = frames[0].size
+        box = (max(0, box[0] - margin), max(0, box[1] - margin), min(w, box[2] + margin), min(h, box[3] + margin))
+        scale = min(1.0, VIEWS_MAX_W / float(box[2] - box[0]))
+        size = (round((box[2] - box[0]) * scale), round((box[3] - box[1]) * scale))
+        # Named out only once every view is in it.
+        part = out + ".part"
+        shutil.rmtree(part, ignore_errors=True)
+        os.makedirs(part)
+        for i, im in enumerate(frames):
+            im = im.crop(box)
+            if scale < 1:
+                im = im.resize(size, Image.LANCZOS)
+            im.save(os.path.join(part, "%d.webp" % i), quality=88, method=4)
+        os.rename(part, out)
+        return 0
+    finally:
+        shutil.rmtree(shots, ignore_errors=True)
+
+
 def drc_counts(report):
     with open(report) as f:
         d = json.load(f)
@@ -186,7 +262,7 @@ class Board:
         self.busy = ""
         self.error = ""
         # What the render, DRC and ERC were made from, kept across restarts.
-        self.meta = {"pcb": "", "render": 0, "drc": 0, "erc": 0, "drc_counts": None, "erc_counts": None, "version": 0}
+        self.meta = {"pcb": "", "render": 0, "drc": 0, "erc": 0, "views": 0, "drc_counts": None, "erc_counts": None, "version": 0, "views_version": 0}
         try:
             with open(self.base + ".json") as f:
                 self.meta.update(json.load(f))
@@ -208,7 +284,7 @@ class Board:
             self.pcb = resolve(self.given)
             self.resolved_at = now
         if self.meta.get("pcb") != self.pcb:
-            self.meta.update({"pcb": self.pcb, "render": 0, "drc": 0, "erc": 0, "drc_counts": None, "erc_counts": None})
+            self.meta.update({"pcb": self.pcb, "render": 0, "drc": 0, "erc": 0, "views": 0, "drc_counts": None, "erc_counts": None})
         t = mtime(self.pcb) if self.pcb else 0
         if t != self.seen:
             self.seen, self.seen_at = t, now
@@ -229,6 +305,9 @@ class Board:
         root = os.path.splitext(self.pcb)[0] + ".kicad_sch"
         if os.path.exists(root) and self.sch_seen and now - self.sch_seen_at >= SETTLE_S and self.meta["erc"] != self.sch_seen:
             return "erc"
+        # Last, being only for the look; it needs Pillow to put together.
+        if Image is not None and (self.meta.get("views") != self.seen or self.meta.get("views_style") != VIEWS_STYLE):
+            return "views"
         return None
 
     def link_farm(self):
@@ -259,6 +338,9 @@ class Board:
             out = self.base + ".render.png"
             args = ["pcb", "render", "-o", out, "-w", str(WIDTH), "-h", str(HEIGHT)] + VIEW + [os.path.join(self.farm, name)]
             made_from = self.seen
+        elif job == "views":
+            out = self.base + ".views.new"
+            made_from = self.seen
         elif job == "drc":
             out = self.base + ".drc.json"
             args = ["pcb", "drc", "--format", "json", "--schematic-parity", "-o", out, os.path.join(self.farm, name)]
@@ -268,11 +350,19 @@ class Board:
             args = ["sch", "erc", "--format", "json", "-o", out, os.path.join(self.farm, stem + ".kicad_sch")]
             made_from = self.sch_seen
         try:
-            os.unlink(out)
+            shutil.rmtree(out) if os.path.isdir(out) else os.unlink(out)
         except OSError:
             pass
-        proc = subprocess.Popen(NICE + ["kicad-cli"] + args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        self.busy = "rendering" if job == "render" else "checking"
+        if job == "views":
+            # This script again, which renders them one after another;
+            # they inherit its priority.
+            command = NICE + [sys.executable, os.path.abspath(__file__), "--views", os.path.join(self.farm, name), out]
+        else:
+            command = NICE + ["kicad-cli"] + args
+        # In a group of its own, so stopping it stops the kicad-clis it runs.
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                start_new_session=True, preexec_fn=die_with_parent)
+        self.busy = {"render": "rendering", "views": "views"}.get(job, "checking")
         return {"board": self, "job": job, "proc": proc, "out": out, "made_from": made_from, "started": time.time()}
 
     def finish(self, run):
@@ -284,6 +374,8 @@ class Board:
             self.error = "kicad-cli %s failed: %s" % (job, last[-1][:160] if last else "exit %s" % proc.returncode)
             # Not again until the next save.
             self.meta[job] = run["made_from"]
+            if job == "views":
+                self.meta["views_style"] = VIEWS_STYLE
             self.save_meta()
             return
         self.error = ""
@@ -292,6 +384,17 @@ class Board:
                 trim(out)
                 os.replace(out, self.base + ".png")
                 self.meta["version"] = int(time.time() * 1000)
+            elif job == "views":
+                # The old views moved aside first: a folder can't be
+                # replaced in one step.
+                old = self.base + ".views.old"
+                shutil.rmtree(old, ignore_errors=True)
+                if os.path.isdir(self.base + ".views"):
+                    os.rename(self.base + ".views", old)
+                os.rename(out, self.base + ".views")
+                shutil.rmtree(old, ignore_errors=True)
+                self.meta["views_version"] = int(time.time() * 1000)
+                self.meta["views_style"] = VIEWS_STYLE
             elif job == "drc":
                 self.meta["drc_counts"] = drc_counts(out)
             else:
@@ -304,6 +407,10 @@ class Board:
     def state(self, now):
         drc, erc = self.meta.get("drc_counts"), self.meta.get("erc_counts")
         image = self.base + ".png" if os.path.exists(self.base + ".png") else ""
+        # The views only while they show the board as it is.
+        shots = self.base + ".views" if os.path.isdir(self.base + ".views") and self.meta.get("views") == self.seen \
+            and self.meta.get("views_style") == VIEWS_STYLE and self.seen else ""
+        # One made another way shows until the new one is there.
         error = self.error
         if not self.pcb:
             error = "No .kicad_pcb in " + self.given
@@ -314,6 +421,8 @@ class Board:
         return {
             "name": os.path.splitext(os.path.basename(self.pcb))[0] if self.pcb else os.path.basename(self.given.rstrip("/")),
             "file": self.pcb, "image": image, "version": self.meta.get("version", 0) if image else 0,
+            "views": shots, "viewCount": len(VIEW_ANGLES) if shots else 0,
+            "viewsVersion": self.meta.get("views_version", 0) if shots else 0,
             "saved": round(saved), "busy": self.busy, "drc": drc, "erc": erc,
             "layers": self.facts.get("layers", 0), "footprints": self.facts.get("footprints", 0),
             "width": self.facts.get("width", 0), "height": self.facts.get("height", 0),
@@ -322,25 +431,56 @@ class Board:
         }
 
 
+def die_with_parent():
+    """Run in a job before it starts: the job ends when the watcher does,
+    even when the shell kills the watcher outright and it can't stop the
+    job itself (Linux's parent-death signal)."""
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+
+
+def stop(run):
+    """Ends a job and whatever it started, and clears what views cut
+    short leave behind."""
+    proc = run["proc"]
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        proc.kill()
+    proc.wait()
+    if run["job"] == "views":
+        for leftover in (run["out"] + ".shots", run["out"] + ".part", run["out"]):
+            shutil.rmtree(leftover, ignore_errors=True)
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--views":
+        return views(sys.argv[2], sys.argv[3])
     if not shutil.which("kicad-cli"):
         print(json.dumps({"boards": {g: {"name": os.path.basename(g.rstrip("/")), "error": "kicad-cli not found", "attention": True} for g in sys.argv[1:]}}), flush=True)
     boards = [Board(g) for g in dict.fromkeys(sys.argv[1:])]
+    # What views left when they were killed before they could clear it, and
+    # the turns that came before views.
+    for b in boards:
+        base = glob.escape(b.base)
+        for leftover in glob.glob(base + ".views.new*") + glob.glob(base + ".views.old") + glob.glob(base + ".turn*"):
+            shutil.rmtree(leftover, ignore_errors=True) if os.path.isdir(leftover) else os.unlink(leftover)
     run = None
     printed = None
     while True:
         now = time.time()
         for b in boards:
             b.look(now)
-        if run and (run["proc"].poll() is not None or now - run["started"] > JOB_TIMEOUT_S):
+        if run and (run["proc"].poll() is not None or now - run["started"] > (VIEWS_TIMEOUT_S if run["job"] == "views" else JOB_TIMEOUT_S)):
             if run["proc"].poll() is None:
-                run["proc"].kill()
-                run["proc"].wait()
+                stop(run)
             run["board"].finish(run)
             run = None
         if run is None and shutil.which("kicad-cli"):
             # Every board's render before any check: those take longer.
-            order = {"render": 0, "drc": 1, "erc": 2}
+            order = {"render": 0, "drc": 1, "erc": 2, "views": 3}
             for job, b in sorted(((b.wanted(now), b) for b in boards if b.wanted(now)), key=lambda w: order[w[0]]):
                 if job:
                     try:
@@ -363,7 +503,7 @@ def main():
         if readable and not sys.stdin.readline():
             break
     if run and run["proc"].poll() is None:
-        run["proc"].kill()
+        stop(run)
     return 0
 
 

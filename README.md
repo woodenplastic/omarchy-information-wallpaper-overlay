@@ -320,6 +320,12 @@ and `*-backups` folders left out).
 - **The render:** the board at an angle from the front left, components and
   all, trimmed to the board and as large as the tile allows. The last render
   stays until the new one is there.
+- **The board from six sides:** once the checks are done, six renders at
+  KiCad's high quality, shadows and all, take the still's place: four
+  round the top and two of the bottom. Each stays six seconds, then fades
+  out and the next fades in, settling from a touch larger. They're made
+  again after each save, change while the desktop can be seen with
+  animations on, and hold otherwise.
 - **DRC and ERC:** the board's design rule check and its schematic's
   electrical rule check, red with errors (unconnected items count as
   errors), yellow with only warnings, green when they pass.
@@ -328,14 +334,18 @@ and `*-backups` folders left out).
 
 A save is acted on once the file has stayed the same for two seconds: the
 render first (a few seconds), then the DRC, and the ERC when the schematic
-changed (each up to about 20 seconds on a large board). Only one `kicad-cli`
-runs at a time, at the lowest CPU and disk priority, and nothing runs while
-the board doesn't change. `kicad-cli` works on a folder of links to the
-project's files under `~/.cache/information-wallpaper-overlay/boards/`, so
-its lock files never land in your project and KiCad doesn't take the board
-for open elsewhere; the renders and reports stay there too, and a restart
-only redoes what changed. Trimming the render takes Pillow
-(`python-pillow`); without it the render keeps its margin.
+changed (each up to about 20 seconds on a large board), then the six
+views, one after another since each uses every core (about a minute on a
+32-core machine with nothing else going on, several on a busy or small
+one; until they're there, the still shows). One job runs at a time, at
+the lowest CPU and disk priority, and nothing runs while the board doesn't
+change. `kicad-cli` works on a folder of links to the project's files
+under `~/.cache/information-wallpaper-overlay/boards/`, so its lock files
+never land in your project and KiCad doesn't take the board for open
+elsewhere; the renders and reports stay there too, and a restart
+only redoes what changed. Trimming the render and cropping the views
+take Pillow (`python-pillow`); without it the render keeps its margin and
+there are no views.
 
 Shown only when there's something to show, the tile is there for 30 minutes
 after a save, and while the DRC or ERC finds errors.

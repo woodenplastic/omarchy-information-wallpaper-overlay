@@ -2,7 +2,8 @@ import QtQuick
 import qs.Commons
 
 // A KiCad board, from scripts/board: a 3D render made again after each
-// save, how its DRC and its schematic's ERC came out, its size, copper
+// save, then views of it from six sides, shown in turn while the desk
+// can be seen; how its DRC and its schematic's ERC came out, its size, copper
 // layers and footprints, and when it was saved. While kicad-cli works on
 // it, that pulses; the last render stays until the new one is there.
 Tile {
@@ -153,7 +154,7 @@ Tile {
         }
         Label {
           anchors.verticalCenter: parent.verticalCenter
-          text: root.board ? root.board.busy + "…" : ""
+          text: !root.board ? "" : root.board.busy === "views" ? "rendering the views…" : root.board.busy + "…"
           font.pixelSize: root.statSize
           color: root.dim
         }
@@ -170,10 +171,126 @@ Tile {
     anchors.bottomMargin: root.statSize * 0.4
     width: parent.width
 
+    // The board from six sides, once there are views of it as it is now:
+    // each stays a while, then fades out, easing back a touch, and the next
+    // fades in, settling from a touch larger. One after the other, never
+    // both at once: two half-faded boards at different angles show through
+    // each other and the wallpaper, and that flickered. They change while
+    // the desk can be seen with animations on and hold otherwise; the first
+    // looks from where the still does. Two layers take turns, the next
+    // loaded off the main thread before the change starts; it runs on the
+    // render thread, and between changes nothing is drawn.
+    Item {
+      id: views
+      readonly property int count: root.board && root.board.views ? root.board.viewCount || 0 : 0
+      readonly property string folder: count > 0 ? "file://" + root.board.views + "/" : ""
+      readonly property string version: count > 0 ? String(root.board.viewsVersion) : ""
+      readonly property int holdMs: 6000
+      readonly property int outMs: 350
+      readonly property int inMs: 650
+      // The view in front and its layer; null until the first has loaded,
+      // and the still shows till then.
+      property int current: 0
+      property Image front: null
+
+      anchors.fill: parent
+      visible: front !== null
+
+      readonly property string key: folder + version
+      onKeyChanged: restart()
+      Component.onCompleted: restart()
+
+      function url(i) {
+        return folder + i + ".webp?v=" + version
+      }
+
+      function restart() {
+        fade.stop()
+        front = null
+        current = 0
+        for (var layer of [one, two]) {
+          layer.wanted = false
+          layer.opacity = 0
+          layer.scale = 1
+        }
+        two.source = ""
+        load(one, 0)
+      }
+
+      function load(layer, view) {
+        layer.view = view
+        layer.wanted = !!folder
+        layer.source = folder ? url(view) : ""
+        // The same view again is there already.
+        arrived(layer)
+      }
+
+      function next() {
+        if (fade.running || count < 2 || !front) return
+        load(front === one ? two : one, (current + 1) % count)
+      }
+
+      function arrived(layer) {
+        if (!layer.wanted || layer.status !== Image.Ready) return
+        layer.wanted = false
+        current = layer.view
+        if (!front) {
+          layer.z = 1
+          layer.opacity = 1
+          front = layer
+          return
+        }
+        front.z = 0
+        layer.z = 1
+        fade.incoming = layer
+        fade.outgoing = front
+        front = layer
+        fade.restart()
+      }
+
+      Timer {
+        interval: views.holdMs
+        repeat: true
+        running: !!views.front && views.count > 1 && root.animate
+        onTriggered: views.next()
+      }
+
+      SequentialAnimation {
+        id: fade
+        property Item incoming: null
+        property Item outgoing: null
+        ParallelAnimation {
+          OpacityAnimator { target: fade.outgoing; from: 1; to: 0; duration: views.outMs; easing.type: Easing.InQuad }
+          ScaleAnimator { target: fade.outgoing; from: 1; to: 0.98; duration: views.outMs; easing.type: Easing.InQuad }
+        }
+        ParallelAnimation {
+          OpacityAnimator { target: fade.incoming; from: 0; to: 1; duration: views.inMs; easing.type: Easing.OutQuad }
+          ScaleAnimator { target: fade.incoming; from: 1.02; to: 1; duration: views.inMs; easing.type: Easing.OutCubic }
+        }
+      }
+
+      component Layer: Image {
+        id: layer
+        property int view: 0
+        property bool wanted: false
+        anchors.fill: parent
+        opacity: 0
+        fillMode: Image.PreserveAspectFit
+        asynchronous: true
+        cache: false
+        smooth: true
+        mipmap: true
+        onStatusChanged: views.arrived(layer)
+      }
+
+      Layer { id: one }
+      Layer { id: two }
+    }
+
     Image {
       id: render
       anchors.fill: parent
-      visible: root.hasImage
+      visible: root.hasImage && !views.visible
       fillMode: Image.PreserveAspectFit
       asynchronous: true
       cache: false
