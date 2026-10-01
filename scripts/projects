@@ -1,0 +1,295 @@
+#!/usr/bin/python3
+"""Watches the git repos in a few folders for the local repos tile: what's
+left uncommitted or unpushed. It prints one JSON line at the start and
+whenever something changed:
+
+  {"folders": {"<folder as given>": {"path", "error", "attention", "counts",
+                                      "repos": [{"name", "branch", "state",
+                                                 "upstream", "ahead", "behind",
+                                                 "changed", "untracked",
+                                                 "conflicts", "stash",
+                                                 "touched", "attention"}]}}}
+
+A folder is given as typed in the settings: "~" works, and "" means
+~/Projects. Its repos are the folder itself when it's one, and those up to
+three levels down; a repo's own folders, hidden ones and the usual build and
+dependency folders aren't searched. Each repo is asked with
+`git status --porcelain=v2 --branch` (a few at once, at a low priority), without git's optional locks, so it
+never holds the index while you work, and never fetches: ahead and behind
+are as of the last fetch. state is "", "detached", "rebasing", "merging",
+"cherry-picking", "reverting" or "bisecting"; touched is when HEAD last
+moved or a changed file was last written (epoch seconds).
+
+A repo needs attention when it has changes, untracked files, conflicts or
+commits its upstream doesn't, or is in the middle of a rebase or merge;
+being behind or having stashes doesn't count. A folder needs attention when
+one of its repos does and was touched in the last two weeks: a repo left
+with changes for a year is still listed, but no news. Repos that do come first, the most recently touched
+first, then the clean ones.
+
+  projects [folder ...]
+
+The watcher exits when stdin closes, with the shell."""
+
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+TICK = 30.0
+# Repos are looked for again now and then; a new clone shows up then.
+FIND_EVERY = 300.0
+DEPTH = 3
+MAX_REPOS = 80
+# Changed files whose times are looked at, for "touched".
+MAX_STAT = 40
+# How recent a repo's changes are news, for the folder's attention.
+RECENT_S = 14 * 86400
+# Repos touched in the last day are asked every tick, the others every five
+# minutes, or at once when their index, HEAD or top folder changes.
+QUIET_S = 86400
+QUIET_EVERY = 300.0
+# Repos asked at once.
+WORKERS = 8
+SKIP = {"node_modules", "build", "dist", "target", "out", "venv", "env", "__pycache__", "vendor",
+        "managed_components", "bower_components", "Pods", "DerivedData"}
+STATES = (("rebase-merge", "rebasing"), ("rebase-apply", "rebasing"), ("MERGE_HEAD", "merging"),
+          ("CHERRY_PICK_HEAD", "cherry-picking"), ("REVERT_HEAD", "reverting"), ("BISECT_LOG", "bisecting"))
+
+
+def expand(folder):
+    return os.path.abspath(os.path.expanduser(folder.strip() or "~/Projects"))
+
+
+def git_dirs(repo):
+    """The repo's git dir and common dir (they differ in a worktree)."""
+    dot = os.path.join(repo, ".git")
+    if os.path.isdir(dot):
+        return dot, dot
+    try:
+        with open(dot) as f:
+            line = f.read().strip()
+    except OSError:
+        return None, None
+    if not line.startswith("gitdir:"):
+        return None, None
+    gitdir = os.path.normpath(os.path.join(repo, line[7:].strip()))
+    common = gitdir
+    try:
+        with open(os.path.join(gitdir, "commondir")) as f:
+            common = os.path.normpath(os.path.join(gitdir, f.read().strip()))
+    except OSError:
+        pass
+    return gitdir, common
+
+
+def find_repos(root):
+    out = []
+
+    def walk(path, depth):
+        if len(out) >= MAX_REPOS:
+            return
+        if os.path.exists(os.path.join(path, ".git")):
+            out.append(path)
+            return
+        if depth >= DEPTH:
+            return
+        try:
+            names = sorted(os.listdir(path))
+        except OSError:
+            return
+        for name in names:
+            if name.startswith(".") or name in SKIP:
+                continue
+            sub = os.path.join(path, name)
+            if os.path.isdir(sub) and not os.path.islink(sub):
+                walk(sub, depth + 1)
+
+    walk(root, 0)
+    return out
+
+
+def last_line(path):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 4096))
+            lines = f.read().splitlines()
+        return lines[-1].decode(errors="replace") if lines else ""
+    except OSError:
+        return ""
+
+
+def count_lines(path):
+    try:
+        with open(path, "rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def head_moved(gitdir):
+    """When HEAD last moved, from its reflog: "old new who <email> time tz\tmsg"."""
+    line = last_line(os.path.join(gitdir, "logs", "HEAD")).split("\t")[0].split()
+    try:
+        return int(line[-2])
+    except (IndexError, ValueError):
+        try:
+            return int(os.stat(os.path.join(gitdir, "HEAD")).st_mtime)
+        except OSError:
+            return 0
+
+
+def look(repo, root):
+    gitdir, common = git_dirs(repo)
+    name = os.path.relpath(repo, root) if repo != root else os.path.basename(repo)
+    info = {"name": name, "branch": "", "state": "", "upstream": False, "ahead": 0, "behind": 0,
+            "changed": 0, "untracked": 0, "conflicts": 0, "stash": 0, "touched": 0, "attention": False}
+    if not gitdir:
+        return None
+    try:
+        r = subprocess.run(["git", "--no-optional-locks", "-C", repo, "status", "--porcelain=v2", "--branch", "-z"],
+                           capture_output=True, timeout=20, env=dict(os.environ, GIT_OPTIONAL_LOCKS="0", LC_ALL="C"))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    paths = []
+    fields = r.stdout.decode(errors="replace").split("\0")
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        i += 1
+        if entry.startswith("# branch.head "):
+            info["branch"] = entry[14:]
+        elif entry.startswith("# branch.upstream "):
+            info["upstream"] = True
+        elif entry.startswith("# branch.ab "):
+            ab = entry[12:].split()
+            info["ahead"], info["behind"] = int(ab[0].lstrip("+")), int(ab[1].lstrip("-"))
+        elif entry.startswith("1 "):
+            info["changed"] += 1
+            paths.append(entry.split(" ", 8)[-1])
+        elif entry.startswith("2 "):
+            # A rename carries the old path as the next field.
+            info["changed"] += 1
+            paths.append(entry.split(" ", 9)[-1])
+            i += 1
+        elif entry.startswith("u "):
+            info["conflicts"] += 1
+        elif entry.startswith("? "):
+            info["untracked"] += 1
+            paths.append(entry[2:])
+    if info["branch"] == "(detached)":
+        info["branch"] = ""
+        info["state"] = "detached"
+    for marker, word in STATES:
+        if os.path.exists(os.path.join(gitdir, marker)):
+            info["state"] = word
+            break
+    # A rebase leaves HEAD detached; the branch it's rebasing is noted.
+    for d in ("rebase-merge", "rebase-apply"):
+        try:
+            with open(os.path.join(gitdir, d, "head-name")) as f:
+                info["branch"] = f.read().strip().replace("refs/heads/", "", 1)
+            break
+        except OSError:
+            pass
+    info["stash"] = count_lines(os.path.join(common, "logs", "refs", "stash"))
+    touched = head_moved(gitdir)
+    for p in paths[:MAX_STAT]:
+        try:
+            touched = max(touched, int(os.lstat(os.path.join(repo, p.rstrip("/"))).st_mtime))
+        except OSError:
+            pass
+    info["touched"] = touched
+    info["attention"] = bool(info["changed"] or info["untracked"] or info["conflicts"] or info["ahead"]
+                             or info["state"] not in ("", "detached"))
+    return info
+
+
+def signature(repo):
+    """What changes when git is used in a repo, cheaply."""
+    gitdir, _ = git_dirs(repo)
+    paths = [repo] + ([os.path.join(gitdir, "index"), os.path.join(gitdir, "HEAD"), os.path.join(gitdir, "logs", "HEAD")] if gitdir else [])
+    out = []
+    for path in paths:
+        try:
+            out.append(os.stat(path).st_mtime)
+        except OSError:
+            out.append(0)
+    return out
+
+
+# repo -> (info, asked at, signature)
+cache = {}
+
+
+def look_cached(repo, root, now):
+    old = cache.get(repo)
+    sig = signature(repo)
+    if old and old[0] and old[2] == sig and now - old[0]["touched"] > QUIET_S and now - old[1] < QUIET_EVERY:
+        return old[0]
+    info = look(repo, root)
+    cache[repo] = (info, now, sig)
+    return info
+
+
+def folder_report(root, repos):
+    if not os.path.isdir(root):
+        return {"path": root, "error": "No folder " + root.replace(os.path.expanduser("~"), "~", 1), "attention": False,
+                "counts": {"total": 0, "attention": 0, "changed": 0, "ahead": 0, "clean": 0}, "repos": []}
+    with ThreadPoolExecutor(WORKERS) as pool:
+        now = time.time()
+        found = [x for x in pool.map(lambda r: look_cached(r, root, now), repos) if x]
+    found.sort(key=lambda x: (not x["attention"], -x["touched"], x["name"].lower()))
+    dirty = sum(1 for x in found if x["changed"] or x["untracked"] or x["conflicts"])
+    return {
+        "path": root, "error": "", "attention": any(x["attention"] and time.time() - x["touched"] < RECENT_S for x in found),
+        "counts": {
+            "total": len(found),
+            "attention": sum(1 for x in found if x["attention"]),
+            "changed": dirty,
+            "ahead": sum(1 for x in found if x["ahead"]),
+            "clean": sum(1 for x in found if not x["attention"]),
+        },
+        "repos": found,
+    }
+
+
+def main():
+    # git runs at a low priority, behind what you're doing.
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    folders = sys.argv[1:] or [""]
+    roots = {f: expand(f) for f in folders}
+    repos = {}
+    found_at = 0.0
+    last = None
+    while True:
+        now = time.time()
+        if now - found_at >= FIND_EVERY:
+            repos = {root: find_repos(root) for root in set(roots.values())}
+            found_at = now
+        reports = {root: folder_report(root, repos.get(root, [])) for root in set(roots.values())}
+        line = json.dumps({"folders": {f: reports[roots[f]] for f in folders}})
+        if line != last:
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except BrokenPipeError:
+                return 0
+            last = line
+        readable, _, _ = select.select([sys.stdin], [], [], TICK)
+        if readable and not sys.stdin.readline():
+            return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

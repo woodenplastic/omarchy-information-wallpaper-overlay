@@ -5,8 +5,10 @@ import qs.Ui
 import "Model.js" as Model
 
 // Settings popup under the bar icon: six slots, each picked from a dropdown
-// (a repo with an optional branch, herdr's agents, tasks, what's playing, or
-// nothing), where they land on the desk, and how the tiles look.
+// (a repo with an optional branch, herdr's agents, tasks, what's playing, a
+// plugin, a workspace, the machine's upkeep, local repos, USB devices, a
+// KiCad board, or nothing), where they land on the desk, and how the tiles
+// look.
 Panel {
   id: root
   moduleName: "woodenplastic.information-wallpaper-overlay"
@@ -47,7 +49,10 @@ Panel {
 
   function loadDrafts() {
     var list = root.widget ? root.widget.slots : Model.slotList([])
-    root.drafts = list.map(function(e) { return { kind: e.kind, repo: e.repo || "", branch: e.branch || "", tools: (e.tools || []).join(", "), plugin: e.plugin || "", workspace: e.workspace || "", hideOnLock: e.hideOnLock === true } })
+    root.drafts = list.map(function(e) {
+      return { kind: e.kind, repo: e.repo || "", branch: e.branch || "", tools: (e.tools || []).join(", "), plugin: e.plugin || "", workspace: e.workspace || "",
+        folder: e.folder || "", path: e.path || "", hideOnLock: e.hideOnLock === true }
+    })
   }
 
   function saveDrafts() {
@@ -57,6 +62,8 @@ Panel {
         : d.kind === "tasks" ? { kind: "tasks", tools: Model.toolList(d.tools) }
         : d.kind === "plugin" ? { kind: "plugin", plugin: d.plugin }
         : d.kind === "workspace" ? { kind: "workspace", workspace: d.workspace }
+        : d.kind === "projects" ? { kind: "projects", folder: d.folder.trim() }
+        : d.kind === "board" ? { kind: "board", path: d.path.trim() }
         : { kind: d.kind }
       if (d.kind !== "empty" && d.hideOnLock) slot.hideOnLock = true
       return slot
@@ -71,7 +78,7 @@ Panel {
     var next = root.drafts.slice()
     // A live workspace starts off the lock screen: anyone there would see
     // its windows.
-    next[index] = { kind: kind, repo: "", branch: "", tools: "", plugin: "", workspace: "",
+    next[index] = { kind: kind, repo: "", branch: "", tools: "", plugin: "", workspace: "", folder: "", path: "",
       hideOnLock: kind === "workspace" ? true : root.drafts[index].hideOnLock === true }
     root.drafts = next
     root.saveDrafts()
@@ -119,13 +126,14 @@ Panel {
     var out = []
     for (var i = 0; i < root.drafts.length; i++) {
       var d = root.drafts[i]
-      if (d.kind !== "empty" && (d.kind !== "github" || Model.normalizeRepo(d.repo)) && (d.kind !== "plugin" || d.plugin) && (d.kind !== "workspace" || d.workspace)) out.push({ slot: i, kind: d.kind, label: root.slotLabel(d) })
+      if (d.kind !== "empty" && (d.kind !== "github" || Model.normalizeRepo(d.repo)) && (d.kind !== "plugin" || d.plugin) && (d.kind !== "workspace" || d.workspace)
+        && (d.kind !== "board" || d.path.trim())) out.push({ slot: i, kind: d.kind, label: root.slotLabel(d) })
     }
     return out
   }
 
   // What a filled slot shows, in a word or two for the preview: the repo,
-  // plugin or workspace by name, otherwise the kind.
+  // plugin, workspace or board by name, otherwise the kind.
   function slotLabel(d) {
     function optionLabel(options, value) {
       var o = options.filter(function(o) { return o.value === value })[0]
@@ -134,6 +142,7 @@ Panel {
     if (d.kind === "github") return Model.normalizeRepo(d.repo).split("/")[1]
     if (d.kind === "plugin") return optionLabel(root.pluginOptions, d.plugin)
     if (d.kind === "workspace") return optionLabel(root.workspaceOptions, d.workspace)
+    if (d.kind === "board") return Model.baseName(d.path.trim()).replace(/\.kicad_(pcb|pro)$/, "")
     return optionLabel(Model.KIND_OPTIONS, d.kind)
   }
 
@@ -439,8 +448,38 @@ Panel {
                     onPopupOpenChanged: root.openDropdowns = Math.max(0, root.openDropdowns + (popupOpen ? 1 : -1))
                   }
 
+                  TextField {
+                    visible: row.kind === "projects"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    placeholderText: "Folder with repos: ~/Projects"
+                    text: row.draft.folder || ""
+                    foreground: Color.popups.text
+                    onTextEdited: root.drafts[row.index].folder = text
+                    onActiveFocusChanged: root.focusedFields += activeFocus ? 1 : -1
+                    onEditingFinished: root.saveDrafts()
+                    onAccepted: keyCatcher.forceActiveFocus()
+                    Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+                  }
+
+                  TextField {
+                    visible: row.kind === "board"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    placeholderText: ".kicad_pcb, .kicad_pro or project folder"
+                    text: row.draft.path || ""
+                    foreground: Color.popups.text
+                    onTextEdited: root.drafts[row.index].path = text
+                    onActiveFocusChanged: root.focusedFields += activeFocus ? 1 : -1
+                    onEditingFinished: root.saveDrafts()
+                    onAccepted: keyCatcher.forceActiveFocus()
+                    Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+                  }
+
                   Text {
-                    visible: row.kind !== "github" && row.kind !== "tasks" && row.kind !== "plugin" && row.kind !== "workspace"
+                    visible: row.kind !== "github" && row.kind !== "tasks" && row.kind !== "plugin" && row.kind !== "workspace" && row.kind !== "projects" && row.kind !== "board"
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -449,6 +488,8 @@ Panel {
                     elide: Text.ElideRight
                     text: row.kind === "herdr" ? "Agents in every herdr workspace"
                       : row.kind === "music" ? "What the bar's media widget plays"
+                      : row.kind === "upkeep" ? "Updates, reboot, failed units, snapshots, disk"
+                      : row.kind === "devices" ? "Dev boards and other USB devices"
                       : "Skipped; the other tiles share the desk"
                     color: root.dim
                     font.family: Style.font.family

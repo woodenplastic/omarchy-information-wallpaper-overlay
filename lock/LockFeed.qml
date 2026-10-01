@@ -110,6 +110,39 @@ Item {
   readonly property var tasksFeed: tasksWatcher
   readonly property var mediaService: null
 
+  // ---- Upkeep, local repos, USB devices and KiCad boards.
+
+  Desk.ScriptFeed {
+    id: upkeepWatcher
+    active: root.live && Model.hasKind(root.tiles, "upkeep")
+    script: "upkeep"
+  }
+
+  Desk.ScriptFeed {
+    id: projectsWatcher
+    active: root.live && Model.hasKind(root.tiles, "projects")
+    script: "projects"
+    args: Model.slotArgs(root.tiles, "projects", "folder")
+  }
+
+  Desk.ScriptFeed {
+    id: devicesWatcher
+    active: root.live && Model.hasKind(root.tiles, "devices")
+    script: "devices"
+  }
+
+  Desk.ScriptFeed {
+    id: boardWatcher
+    active: root.live && Model.hasKind(root.tiles, "board")
+    script: "board"
+    args: Model.slotArgs(root.tiles, "board", "path")
+  }
+
+  readonly property var upkeepFeed: upkeepWatcher
+  readonly property var projectsFeed: projectsWatcher
+  readonly property var devicesFeed: devicesWatcher
+  readonly property var boardFeed: boardWatcher
+
   // ---- Windows and monitors, for workspace tiles on the lock screen.
 
   Desk.WorkspaceFeed {

@@ -15,6 +15,14 @@ need an app open for:
 - **Now playing:** the cover, title, artist and how far into the track.
 - **Any installed plugin:** its menu, live, or its own `DeskTile.qml`.
 - **A workspace, live:** its windows where they are, as they are right now.
+- **Upkeep:** updates waiting, whether a reboot is needed, failed units, the
+  last snapshot and free space.
+- **Local repos:** which repos in a folder have changes not committed or
+  commits not pushed.
+- **USB devices:** the dev boards plugged in, their ports and who has them
+  open.
+- **A KiCad board:** a 3D render that follows your saves, with its DRC and
+  ERC counts.
 
 The tiles sit between the wallpaper and your windows, so you see them on an
 empty workspace or in the gaps between windows. They never take a click.
@@ -217,6 +225,121 @@ workspaces render at 60 in that time too. A workspace slot starts out kept off t
 screen, since anyone there would see its windows; its lock button changes
 that.
 
+## The upkeep tile
+
+How the machine is doing, one row each, red or yellow when something needs
+a look:
+
+- **Reboot:** needed once the running kernel's modules are gone (a newer
+  kernel replaced it); suggested when the microcode, systemd, glibc, the
+  firmware or the NVIDIA driver were upgraded since the boot. Otherwise how
+  long it's been up.
+- **Updates:** how many packages have updates, from the repos and the AUR
+  (`yay` or `paru`), and whether Omarchy itself has one, checked every 30
+  minutes, or every 5 while the network isn't there.
+- **Failed units:** systemd units that failed, the system's and yours.
+- **Snapshot:** when the last one was taken. Snapper's list needs root, so
+  this goes by when `/.snapshots` last changed.
+- **Free space** on `/`, and on `/home` when it's another filesystem:
+  yellow under 10%, red under 5%.
+
+Where there's room, a row lists more under it: the packages with their
+versions, Omarchy and kernels first, and the units that failed, the red rows
+first. The tile only watches: it never updates, restarts or asks for a
+password.
+
+## The local repos tile
+
+**Local repos** shows the git repos in a folder and what's left in them:
+changes not committed, commits not pushed. Pick the folder in the slot's
+field; left empty, it's `~/Projects`. The folder itself counts when it's a
+repo, and so does every repo up to three levels down. Hidden folders,
+`node_modules`, build folders and the folders inside a repo aren't searched.
+
+- **The counts:** how many repos are stuck in a rebase or merge or have
+  conflicts, how many have changes, how many have commits that aren't
+  pushed, and how many are clean.
+- **Each repo:** its path in the folder, the branch, and how many files
+  changed, are new or conflict. `↑3` means three commits the upstream
+  doesn't have, `↓2` two it has that you don't, and any stashes are counted.
+  On the right is how long ago it was touched: the last commit, checkout or
+  pull, or the last write to a changed file.
+- A square for each repo: red in the middle of a rebase or merge or with
+  conflicts, yellow with changes, the accent color with only unpushed
+  commits, green when clean. A detached HEAD and a branch that was never
+  pushed say so.
+
+The repos with something left come first, the most recently touched first.
+The clean ones follow, dimmed, and when they don't all fit, the last row
+counts them.
+
+The tile only reads. It never fetches, so ahead and behind are as of your
+last fetch. It runs `git status` without git's optional locks, so it never
+holds a repo's index while you work, and at a low priority. Repos touched in
+the last day are looked at every 30 seconds. The others are looked at every
+five minutes, or right away when their index, HEAD or top folder changes. New
+clones show up within five minutes.
+
+For **Only when there's something to show**, a folder has something when a
+repo with changes, unpushed commits, conflicts or a rebase or merge in
+progress was touched in the last two weeks. Repos left like that for longer
+are still listed, but don't bring the tile back. Being behind and having
+stashes don't count.
+
+## The devices tile
+
+What's plugged in over USB, dev boards first. Every two seconds the tile
+reads the USB devices from `/sys`, without starting a process:
+
+- **Dev boards and debug probes**, known by their USB ids: ESP32s on their
+  own USB (USB-Serial-JTAG) or behind a CP210x, CH340/CH9102 or FTDI
+  USB-UART bridge, Raspberry Pi Picos (and an RP2040 or RP2350 waiting in
+  BOOTSEL), ST-LINKs, J-Links, CMSIS-DAP probes, Arduinos, Adafruit and Seeed
+  boards, and any other device with a serial port. A bridge doesn't tell
+  which chip is behind it, so the tile says "USB-UART bridge".
+- **Each board's port** (`/dev/ttyACM0`, `/dev/ttyUSB0`) and **who has it
+  open**: green when the port is free, yellow and pulsing while a program
+  holds it ("in use by idf.py monitor", "esptool", "minicom"), so you see
+  why a flash can't get at it. Then how long ago it was plugged in.
+- **A board you unplugged** stays for two minutes, greyed: "unplugged 40s
+  ago".
+- **The other devices** (keyboards, mice, cameras, storage, audio) below,
+  dim and short; hubs are left out.
+
+The tile never opens a serial port, so it doesn't show what a board
+prints: opening the port of an ESP32, and of most boards with an auto-reset
+circuit, toggles DTR and RTS, and that resets the board.
+
+## The board tile
+
+**KiCad board** shows a board you're working on as a 3D render, made again
+each time you save it. Type the board in the slot's field: a `.kicad_pcb`,
+a `.kicad_pro`, or a project folder, where the newest board counts (hidden
+and `*-backups` folders left out).
+
+- **The render:** the board at an angle from the front left, components and
+  all, trimmed to the board and as large as the tile allows. The last render
+  stays until the new one is there.
+- **DRC and ERC:** the board's design rule check and its schematic's
+  electrical rule check, red with errors (unconnected items count as
+  errors), yellow with only warnings, green when they pass.
+- **The facts:** the outline's size in mm, copper layers, footprints, how
+  many places differ from the schematic, and when it was saved.
+
+A save is acted on once the file has stayed the same for two seconds: the
+render first (a few seconds), then the DRC, and the ERC when the schematic
+changed (each up to about 20 seconds on a large board). Only one `kicad-cli`
+runs at a time, at the lowest CPU and disk priority, and nothing runs while
+the board doesn't change. `kicad-cli` works on a folder of links to the
+project's files under `~/.cache/information-wallpaper-overlay/boards/`, so
+its lock files never land in your project and KiCad doesn't take the board
+for open elsewhere; the renders and reports stay there too, and a restart
+only redoes what changed. Trimming the render takes Pillow
+(`python-pillow`); without it the render keeps its margin.
+
+Shown only when there's something to show, the tile is there for 30 minutes
+after a save, and while the DRC or ERC finds errors.
+
 ## The music tile
 
 What the bar's media widget shows: the player playing (Spotify, a browser,
@@ -245,7 +368,9 @@ The popup holds everything:
 - **Slots:** six, one row each. A dropdown picks what the slot shows:
   **GitHub repository**, **herdr agents**, **Tasks**, **Now playing**,
   **Installed plugin** (then which one), **Workspace (live)** (then which
-  one) or **Empty**, and any of them in
+  one), **Upkeep**, **Local repos** (then the folder, `~/Projects` if left
+  empty), **USB devices**, **KiCad board** (then a `.kicad_pcb`, a
+  `.kicad_pro` or the project's folder) or **Empty**, and any of them in
   as many slots as you like. A repository gets
   its field beside the dropdown: start typing and it suggests your own repos
   and your organizations' repos, most recently pushed first; pick one with
@@ -303,6 +428,11 @@ at it, so plugin updates reach the lock screen without adding it again.
   `gh auth login`, for repo tiles. The overlay uses that login, so private
   repos work without a token to set up.
 - [herdr](https://herdr.dev), for the agents tile.
+- `pacman-contrib` (`checkupdates`), for the upkeep tile's update count;
+  `yay` or `paru` for the AUR's.
+- [KiCad](https://www.kicad.org) with `kicad-cli pcb render` (tested with
+  10.0), for the board tile.
+- `git`, for the local repos tile.
 - `jq`, `curl` and the system Python's PyGObject (for the tray icon), which
   Omarchy already has.
 

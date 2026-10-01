@@ -230,6 +230,40 @@ BarWidget {
     }
   }
 
+  // ---- The machine's upkeep, local repos, USB devices and KiCad boards:
+  //      a watcher script each, shared by all slots of its kind.
+
+  ScriptFeed {
+    id: upkeepWatcher
+    active: root.isPrimary && Model.hasKind(root.tiles, "upkeep")
+    script: "upkeep"
+  }
+
+  ScriptFeed {
+    id: projectsWatcher
+    active: root.isPrimary && Model.hasKind(root.tiles, "projects")
+    script: "projects"
+    args: Model.slotArgs(root.tiles, "projects", "folder")
+  }
+
+  ScriptFeed {
+    id: devicesWatcher
+    active: root.isPrimary && Model.hasKind(root.tiles, "devices")
+    script: "devices"
+  }
+
+  ScriptFeed {
+    id: boardWatcher
+    active: root.isPrimary && Model.hasKind(root.tiles, "board")
+    script: "board"
+    args: Model.slotArgs(root.tiles, "board", "path")
+  }
+
+  readonly property var upkeepFeed: upkeepWatcher
+  readonly property var projectsFeed: projectsWatcher
+  readonly property var devicesFeed: devicesWatcher
+  readonly property var boardFeed: boardWatcher
+
   // ---- Windows and monitors, for workspace tiles.
 
   WorkspaceFeed {

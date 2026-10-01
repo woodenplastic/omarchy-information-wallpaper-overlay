@@ -1,0 +1,371 @@
+#!/usr/bin/python3
+"""Watches KiCad boards for the board tile: a 3D render of each, made again
+after it's saved, its DRC and its schematic's ERC, and a few facts read from
+the file. Prints one JSON line at the start and whenever something changes:
+
+  {"boards": {"<path as given>": {"name", "file", "image", "version",
+              "saved", "busy", "drc", "erc", "layers", "footprints",
+              "width", "height", "error", "attention"}}}
+
+  board <path> [<path> ...]
+
+A path is a .kicad_pcb, a .kicad_pro, or a project folder, where the newest
+.kicad_pcb counts (hidden and *-backups folders left out); it may start
+with ~. A save is acted on once the file has stayed the same for two
+seconds: the render first, then the DRC; a changed schematic gets an ERC.
+One kicad-cli runs at a time, under nice and ionice. Renders, reports and
+what they were made from are kept in
+$XDG_CACHE_HOME/information-wallpaper-overlay/boards/, so a restart only
+redoes what changed. kicad-cli works on a folder of links to the
+project's files there, which keeps its lock files out of the project.
+
+image is the PNG, trimmed to the board when Pillow is there, and version
+changes with it. saved is when the board or
+its schematic was last saved (epoch seconds). busy is "rendering",
+"checking" or "". drc is {errors, warnings, unconnected, parity} and erc
+{errors, warnings}, null until known. width and height are the Edge.Cuts
+outline in mm. attention: saved in the last 30 minutes, or DRC or ERC
+errors, or an error; a tile shown only when there's something to show
+uses it. The watcher exits when stdin closes, with the shell."""
+
+import hashlib
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import time
+
+TICK = 3.0
+SETTLE_S = 2.0
+RECENT_S = 30 * 60
+FOLDER_EVERY_S = 30
+JOB_TIMEOUT_S = 300
+WIDTH, HEIGHT = 1600, 1000
+# Angled from the front left, the whole board in the frame.
+VIEW = ["--rotate", "-35,0,25", "--zoom", "0.9", "--quality", "basic", "--background", "transparent"]
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "information-wallpaper-overlay", "boards")
+NICE = ["nice", "-n", "19"] + (["ionice", "-c", "2", "-n", "7"] if shutil.which("ionice") else [])
+
+
+def mtime(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0
+
+
+def newest_board(folder):
+    """The newest .kicad_pcb in a project folder, three levels down at most."""
+    best, best_t = "", 0
+    root_depth = folder.rstrip("/").count("/")
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and not d.endswith("backups")]
+        if dirpath.count("/") - root_depth >= 3:
+            dirnames[:] = []
+        for f in filenames:
+            if f.endswith(".kicad_pcb"):
+                p = os.path.join(dirpath, f)
+                t = mtime(p)
+                if t > best_t:
+                    best, best_t = p, t
+    return best
+
+
+def resolve(given):
+    path = os.path.expanduser(given)
+    if os.path.isdir(path):
+        return newest_board(path)
+    if path.endswith(".kicad_pro"):
+        return path[:-len(".kicad_pro")] + ".kicad_pcb"
+    return path
+
+
+def schematics(pcb):
+    """The schematic sheets beside a board: the root one has its name."""
+    folder = os.path.dirname(pcb)
+    try:
+        return [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".kicad_sch")]
+    except OSError:
+        return []
+
+
+NUM = r"(-?[\d.]+)"
+
+
+def facts(pcb):
+    """Copper layers, footprints and the Edge.Cuts outline's size in mm,
+    read from the file's text."""
+    try:
+        with open(pcb, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    out = {}
+    m = re.search(r"^\t\(layers\n(.*?)^\t\)", text, re.S | re.M)
+    if m:
+        out["layers"] = len(re.findall(r'"[^"]*\.Cu" (?:signal|power|mixed|jumper)', m.group(1)))
+    out["footprints"] = len(re.findall(r'^\t\(footprint "', text, re.M))
+    xs, ys = [], []
+    for block in re.finditer(r"^\t\(gr_(?:line|arc|rect|circle|poly|curve)\n(.*?)^\t\)", text, re.S | re.M):
+        body = block.group(1)
+        if '(layer "Edge.Cuts")' not in body:
+            continue
+        points = re.findall(r"\((?:start|end|mid|center|xy) " + NUM + " " + NUM + r"\)", body)
+        if "gr_circle" in block.group(0)[:12] and len(points) >= 2:
+            (cx, cy), (ex, ey) = [(float(a), float(b)) for a, b in points[:2]]
+            r = ((ex - cx) ** 2 + (ey - cy) ** 2) ** 0.5
+            points = [(cx - r, cy - r), (cx + r, cy + r)]
+        for x, y in points:
+            xs.append(float(x))
+            ys.append(float(y))
+    if xs:
+        out["width"] = round(max(xs) - min(xs), 1)
+        out["height"] = round(max(ys) - min(ys), 1)
+    return out
+
+
+def trim(png):
+    """Cuts the empty margin around the board out of a render, keeping a
+    little; left as it is without Pillow."""
+    if Image is None:
+        return
+    with Image.open(png) as im:
+        box = im.getchannel("A").getbbox() if im.mode == "RGBA" else None
+        if not box:
+            return
+        margin = round(max(box[2] - box[0], box[3] - box[1]) * 0.03)
+        box = (max(0, box[0] - margin), max(0, box[1] - margin), min(im.width, box[2] + margin), min(im.height, box[3] + margin))
+        im.crop(box).save(png)
+
+
+def drc_counts(report):
+    with open(report) as f:
+        d = json.load(f)
+    violations = d.get("violations", [])
+    return {
+        "errors": sum(1 for v in violations if v.get("severity") == "error"),
+        "warnings": sum(1 for v in violations if v.get("severity") == "warning"),
+        "unconnected": len(d.get("unconnected_items", [])),
+        "parity": len(d.get("schematic_parity", [])),
+    }
+
+
+def erc_counts(report):
+    with open(report) as f:
+        d = json.load(f)
+    violations = [v for s in d.get("sheets", []) for v in s.get("violations", [])]
+    return {
+        "errors": sum(1 for v in violations if v.get("severity") == "error"),
+        "warnings": sum(1 for v in violations if v.get("severity") == "warning"),
+    }
+
+
+class Board:
+    def __init__(self, given):
+        self.given = given
+        self.key = hashlib.sha1(os.path.abspath(os.path.expanduser(given)).encode()).hexdigest()[:16]
+        self.base = os.path.join(CACHE, self.key)
+        self.farm = self.base + "-farm"
+        self.pcb = ""
+        self.resolved_at = 0
+        self.seen = 0          # the board's mtime at the last look
+        self.seen_at = 0       # when that changed
+        self.sch_seen = 0
+        self.sch_seen_at = 0
+        self.facts = {}
+        self.facts_of = 0
+        self.busy = ""
+        self.error = ""
+        # What the render, DRC and ERC were made from, kept across restarts.
+        self.meta = {"pcb": "", "render": 0, "drc": 0, "erc": 0, "drc_counts": None, "erc_counts": None, "version": 0}
+        try:
+            with open(self.base + ".json") as f:
+                self.meta.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+    def save_meta(self):
+        try:
+            os.makedirs(CACHE, exist_ok=True)
+            tmp = self.base + ".json.tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.meta, f)
+            os.replace(tmp, self.base + ".json")
+        except OSError:
+            pass
+
+    def look(self, now):
+        if not self.pcb or now - self.resolved_at > FOLDER_EVERY_S or not os.path.isdir(os.path.expanduser(self.given)) and now - self.resolved_at > TICK:
+            self.pcb = resolve(self.given)
+            self.resolved_at = now
+        if self.meta.get("pcb") != self.pcb:
+            self.meta.update({"pcb": self.pcb, "render": 0, "drc": 0, "erc": 0, "drc_counts": None, "erc_counts": None})
+        t = mtime(self.pcb) if self.pcb else 0
+        if t != self.seen:
+            self.seen, self.seen_at = t, now
+        s = max([mtime(p) for p in schematics(self.pcb)] or [0]) if self.pcb else 0
+        if s != self.sch_seen:
+            self.sch_seen, self.sch_seen_at = s, now
+        if t and t != self.facts_of and now - self.seen_at >= SETTLE_S:
+            self.facts, self.facts_of = facts(self.pcb), t
+
+    def wanted(self, now):
+        """The next job this board needs, once its files have settled."""
+        if not self.seen or now - self.seen_at < SETTLE_S:
+            return None
+        if self.meta["render"] != self.seen:
+            return "render"
+        if self.meta["drc"] != self.seen:
+            return "drc"
+        root = os.path.splitext(self.pcb)[0] + ".kicad_sch"
+        if os.path.exists(root) and self.sch_seen and now - self.sch_seen_at >= SETTLE_S and self.meta["erc"] != self.sch_seen:
+            return "erc"
+        return None
+
+    def link_farm(self):
+        """Links to every file of the project, so kicad-cli's locks and
+        temporary files land here."""
+        folder = os.path.dirname(self.pcb)
+        os.makedirs(self.farm, exist_ok=True)
+        names = set(os.listdir(folder))
+        for name in os.listdir(self.farm):
+            p = os.path.join(self.farm, name)
+            if os.path.islink(p) and name not in names:
+                os.unlink(p)
+        for name in names:
+            p = os.path.join(self.farm, name)
+            target = os.path.join(folder, name)
+            if os.path.islink(p) and os.readlink(p) == target:
+                continue
+            if os.path.islink(p):
+                os.unlink(p)
+            if not os.path.lexists(p):
+                os.symlink(target, p)
+
+    def start(self, job):
+        self.link_farm()
+        name = os.path.basename(self.pcb)
+        stem = os.path.splitext(name)[0]
+        if job == "render":
+            out = self.base + ".render.png"
+            args = ["pcb", "render", "-o", out, "-w", str(WIDTH), "-h", str(HEIGHT)] + VIEW + [os.path.join(self.farm, name)]
+            made_from = self.seen
+        elif job == "drc":
+            out = self.base + ".drc.json"
+            args = ["pcb", "drc", "--format", "json", "--schematic-parity", "-o", out, os.path.join(self.farm, name)]
+            made_from = self.seen
+        else:
+            out = self.base + ".erc.json"
+            args = ["sch", "erc", "--format", "json", "-o", out, os.path.join(self.farm, stem + ".kicad_sch")]
+            made_from = self.sch_seen
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        proc = subprocess.Popen(NICE + ["kicad-cli"] + args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.busy = "rendering" if job == "render" else "checking"
+        return {"board": self, "job": job, "proc": proc, "out": out, "made_from": made_from, "started": time.time()}
+
+    def finish(self, run):
+        job, proc, out = run["job"], run["proc"], run["out"]
+        err = (proc.stderr.read() or b"").decode(errors="replace").strip() if proc.stderr else ""
+        self.busy = ""
+        if not os.path.exists(out):
+            last = [l for l in err.splitlines() if l.strip()]
+            self.error = "kicad-cli %s failed: %s" % (job, last[-1][:160] if last else "exit %s" % proc.returncode)
+            # Not again until the next save.
+            self.meta[job] = run["made_from"]
+            self.save_meta()
+            return
+        self.error = ""
+        try:
+            if job == "render":
+                trim(out)
+                os.replace(out, self.base + ".png")
+                self.meta["version"] = int(time.time() * 1000)
+            elif job == "drc":
+                self.meta["drc_counts"] = drc_counts(out)
+            else:
+                self.meta["erc_counts"] = erc_counts(out)
+        except (OSError, ValueError) as e:
+            self.error = "couldn't read the %s report: %s" % (job.upper(), e)
+        self.meta[job] = run["made_from"]
+        self.save_meta()
+
+    def state(self, now):
+        drc, erc = self.meta.get("drc_counts"), self.meta.get("erc_counts")
+        image = self.base + ".png" if os.path.exists(self.base + ".png") else ""
+        error = self.error
+        if not self.pcb:
+            error = "No .kicad_pcb in " + self.given
+        elif not self.seen:
+            error = "Not found: " + self.given
+        saved = max(self.seen, self.sch_seen)
+        errors = (drc or {}).get("errors", 0) + (drc or {}).get("unconnected", 0) + (erc or {}).get("errors", 0)
+        return {
+            "name": os.path.splitext(os.path.basename(self.pcb))[0] if self.pcb else os.path.basename(self.given.rstrip("/")),
+            "file": self.pcb, "image": image, "version": self.meta.get("version", 0) if image else 0,
+            "saved": round(saved), "busy": self.busy, "drc": drc, "erc": erc,
+            "layers": self.facts.get("layers", 0), "footprints": self.facts.get("footprints", 0),
+            "width": self.facts.get("width", 0), "height": self.facts.get("height", 0),
+            "error": error,
+            "attention": bool(error) or errors > 0 or (saved > 0 and now - saved < RECENT_S),
+        }
+
+
+def main():
+    if not shutil.which("kicad-cli"):
+        print(json.dumps({"boards": {g: {"name": os.path.basename(g.rstrip("/")), "error": "kicad-cli not found", "attention": True} for g in sys.argv[1:]}}), flush=True)
+    boards = [Board(g) for g in dict.fromkeys(sys.argv[1:])]
+    run = None
+    printed = None
+    while True:
+        now = time.time()
+        for b in boards:
+            b.look(now)
+        if run and (run["proc"].poll() is not None or now - run["started"] > JOB_TIMEOUT_S):
+            if run["proc"].poll() is None:
+                run["proc"].kill()
+                run["proc"].wait()
+            run["board"].finish(run)
+            run = None
+        if run is None and shutil.which("kicad-cli"):
+            # Every board's render before any check: those take longer.
+            order = {"render": 0, "drc": 1, "erc": 2}
+            for job, b in sorted(((b.wanted(now), b) for b in boards if b.wanted(now)), key=lambda w: order[w[0]]):
+                if job:
+                    try:
+                        run = b.start(job)
+                    except OSError as e:
+                        b.error = "couldn't run kicad-cli: %s" % e
+                        b.meta[job] = b.seen if job != "erc" else b.sch_seen
+                        continue
+                    break
+        line = json.dumps({"boards": {b.given: b.state(now) for b in boards}})
+        if line != printed:
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except BrokenPipeError:
+                break
+            printed = line
+        # Quicker while kicad-cli runs, to catch its end.
+        readable, _, _ = select.select([sys.stdin], [], [], 0.5 if run else TICK)
+        if readable and not sys.stdin.readline():
+            break
+    if run and run["proc"].poll() is None:
+        run["proc"].kill()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

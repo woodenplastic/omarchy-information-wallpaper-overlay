@@ -1,0 +1,271 @@
+#!/usr/bin/python3
+"""Watches the USB devices for the devices tile: dev boards and debug
+probes first, then the rest. Every two seconds it reads /sys/bus/usb, and
+prints one JSON line at the start and whenever something changed:
+
+  {"boards": [{"id", "vendor", "product", "name", "kind", "maker", "model",
+               "serial", "speed", "ports": [{"dev", "users"}], "since",
+               "gone"}],
+   "others": [{"id", "name", "kind", "since"}],
+   "attention": true|false}
+
+kind of a board: board, bootloader, probe, bridge (a USB-UART chip, which
+doesn't say what's behind it) or serial (an unknown device with a serial
+port). ports are its /dev/tty*, with the programs that have one open
+("idf.py monitor", "esptool"). since is when it was plugged in (the time
+its directory in sysfs was made), gone when it was unplugged: a board that
+went stays two minutes. attention: a board is plugged in, or went in the
+last two minutes.
+
+It never opens a serial port, so it doesn't show what a board prints:
+opening the port of an ESP32 (and most boards with an auto-reset circuit)
+toggles DTR and RTS, which resets the board.
+
+  devices
+
+The watcher exits when stdin closes, with the shell."""
+
+import json
+import os
+import select
+import sys
+import time
+
+TICK = 2.0
+GONE_KEEP = 120
+
+USB = "/sys/bus/usb/devices"
+
+# vendor -> (product -> (name, kind)), with None for any product of the
+# vendor; the vendor's own entry is the fallback.
+KNOWN = {
+    "303a": {"0002": ("ESP32-S2", "board"), "1001": ("ESP32 USB-Serial-JTAG", "board"),
+             None: ("Espressif board", "board")},
+    "10c4": {"ea60": ("CP210x USB-UART bridge", "bridge"), "ea70": ("CP2105 USB-UART bridge", "bridge"),
+             "ea71": ("CP2108 USB-UART bridge", "bridge"), None: ("Silicon Labs USB-UART bridge", "bridge")},
+    "1a86": {"7523": ("CH340 USB-UART bridge", "bridge"), "7522": ("CH340K USB-UART bridge", "bridge"),
+             "55d4": ("CH9102 USB-UART bridge", "bridge"), "55d3": ("CH343 USB-UART bridge", "bridge"),
+             None: ("WCH USB-UART bridge", "bridge")},
+    "0403": {"6001": ("FT232R USB-UART bridge", "bridge"), "6010": ("FT2232 JTAG/UART (e.g. ESP-Prog)", "probe"),
+             "6011": ("FT4232 JTAG/UART", "probe"), "6014": ("FT232H USB-UART bridge", "bridge"),
+             "6015": ("FT231X USB-UART bridge", "bridge"), None: ("FTDI USB-UART bridge", "bridge")},
+    "2e8a": {"0003": ("RP2040 in BOOTSEL", "bootloader"), "000f": ("RP2350 in BOOTSEL", "bootloader"),
+             "000c": ("Raspberry Pi Debug Probe", "probe"), None: ("Raspberry Pi Pico", "board")},
+    "0483": {"3748": ("ST-LINK/V2", "probe"), "374b": ("ST-LINK/V2-1", "probe"), "374e": ("ST-LINK/V3", "probe"),
+             "374f": ("ST-LINK/V3", "probe"), "3753": ("ST-LINK/V3", "probe"), "df11": ("STM32 DFU bootloader", "bootloader"),
+             "5740": ("STM32 virtual COM port", "board"), None: ("STMicro board", "board")},
+    "2341": {None: ("Arduino", "board")},
+    "2a03": {None: ("Arduino", "board")},
+    "239a": {None: ("Adafruit board", "board")},
+    "2886": {None: ("Seeed board", "board")},
+    "1366": {None: ("SEGGER J-Link", "probe")},
+    "0d28": {"0204": ("DAPLink (CMSIS-DAP)", "probe"), None: ("Arm mbed board", "board")},
+    "1d50": {"6018": ("Black Magic Probe", "probe")},
+    "16c0": {"0483": ("Teensy", "board"), "0478": ("Teensy bootloader", "bootloader")},
+    "1915": {None: ("Nordic board", "board")},
+}
+
+# Interface classes, for the other devices.
+CLASSES = {"01": "audio", "02": "serial", "03": "input", "06": "camera", "07": "printer", "08": "storage",
+           "0a": "serial", "0b": "smart card", "0e": "camera", "e0": "wireless"}
+
+# Programs whose name says less than what they are.
+HOLDERS = {"idf_monitor.py": "idf.py monitor", "esp_idf_monitor": "idf.py monitor", "esptool.py": "esptool",
+           "esptool": "esptool", "miniterm.py": "miniterm", "miniterm": "miniterm", "pio": "pio", "platformio": "pio"}
+INTERPRETERS = {"python", "python3", "node", "sh", "bash", "perl", "ruby"}
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def plugged_at(dev):
+    """When a device was plugged in: its directory in sysfs is made then.
+    (Its /dev/bus/usb node isn't a sure sign: a program that talks to the
+    device, say for its lights, moves that node's times along.)"""
+    try:
+        st = os.stat(os.path.realpath(dev))
+        return round(min(st.st_mtime, st.st_ctime))
+    except OSError:
+        return 0
+
+
+def kind_of_other(dev, name):
+    """keyboard, mouse, storage, … from a device's interfaces. A mouse often
+    has a keyboard interface too (for its buttons), so the boot interface,
+    the one that works in a BIOS, says which it is."""
+    kinds, boot = [], None
+    for entry in sorted(os.listdir(dev)):
+        if not entry.startswith(name + ":"):
+            continue
+        cls = read(os.path.join(dev, entry, "bInterfaceClass"))
+        if cls == "03":
+            proto = read(os.path.join(dev, entry, "bInterfaceProtocol"))
+            kind = "keyboard" if proto == "01" else "mouse" if proto == "02" else "input"
+            if boot is None and read(os.path.join(dev, entry, "bInterfaceSubClass")) == "01":
+                boot = kind
+            kinds.append(kind)
+        elif cls in CLASSES:
+            kinds.append(CLASSES[cls])
+    for k in ("camera", "storage", "audio", "wireless"):
+        if k in kinds:
+            return k
+    if boot:
+        return boot
+    for k in ("keyboard", "mouse", "printer", "smart card", "serial", "input"):
+        if k in kinds:
+            return k
+    return "device"
+
+
+def tty_ports():
+    """USB device path (real) -> its tty devices."""
+    out = {}
+    try:
+        names = os.listdir("/sys/class/tty")
+    except OSError:
+        return out
+    for name in names:
+        if not (name.startswith("ttyACM") or name.startswith("ttyUSB")):
+            continue
+        path = os.path.realpath("/sys/class/tty/%s/device" % name)
+        while path != "/" and not os.path.exists(os.path.join(path, "idVendor")):
+            path = os.path.dirname(path)
+        if path != "/":
+            out.setdefault(path, []).append("/dev/" + name)
+    return out
+
+
+def program(argv):
+    if not argv:
+        return ""
+    tool, args = os.path.basename(argv[0]), argv[1:]
+    if tool.startswith("python") and len(args) >= 2 and args[0] == "-m":
+        tool = args[1]
+    elif tool in INTERPRETERS or tool.startswith("python"):
+        scripts = [a for a in args if not a.startswith("-")]
+        tool = os.path.basename(scripts[0]) if scripts else tool
+    return HOLDERS.get(tool, tool)
+
+
+def holders(devs):
+    """tty -> the programs that have it open, of those this user may see."""
+    out = {d: [] for d in devs}
+    if not devs:
+        return out
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fd_dir = "/proc/%s/fd" % pid
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        opened = set()
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(fd_dir, fd))
+            except OSError:
+                continue
+            if target in out:
+                opened.add(target)
+        if not opened:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                argv = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+        except OSError:
+            continue
+        name = program(argv)
+        for dev in opened:
+            if name and name not in out[dev]:
+                out[dev].append(name)
+    return out
+
+
+def scan():
+    """The USB devices now: boards first, keyed by their sysfs name."""
+    ports = tty_ports()
+    boards, others = {}, {}
+    try:
+        names = os.listdir(USB)
+    except OSError:
+        return boards, others
+    for name in names:
+        dev = os.path.join(USB, name)
+        vendor = read(dev + "/idVendor")
+        if not vendor or name.startswith("usb") or read(dev + "/bDeviceClass") == "09":
+            continue
+        product = read(dev + "/idProduct")
+        maker, model = read(dev + "/manufacturer"), read(dev + "/product")
+        devs = sorted(ports.get(os.path.realpath(dev), []))
+        known = KNOWN.get(vendor, {})
+        hit = known.get(product) or known.get(None)
+        if not hit and "cmsis-dap" in model.lower():
+            hit = ("CMSIS-DAP probe", "probe")
+        if not hit and devs:
+            hit = (model or maker or "Serial device", "serial")
+        # Same device, same plug: a replug gets a new devnum.
+        key = "%s-%s" % (name, read(dev + "/devnum"))
+        since = plugged_at(dev)
+        if hit:
+            boards[key] = {
+                "id": key, "vendor": vendor, "product": product, "name": hit[0], "kind": hit[1],
+                "maker": maker, "model": model, "serial": read(dev + "/serial"), "speed": read(dev + "/speed"),
+                "ports": devs, "since": since, "gone": 0,
+            }
+        else:
+            others[key] = {"id": key, "name": model or maker or "%s:%s" % (vendor, product),
+                           "kind": kind_of_other(dev, name), "since": since}
+    return boards, others
+
+
+def main():
+    gone = {}   # id -> a board that was unplugged
+    seen = {}   # id -> when it was plugged in, as first read
+    last = None
+    while True:
+        now = time.time()
+        boards, others = scan()
+        # The first reading stands, should the directory's time move.
+        for d in list(boards.values()) + list(others.values()):
+            d["since"] = seen.setdefault(d["id"], d["since"])
+        for key in list(seen):
+            if key not in boards and key not in others:
+                del seen[key]
+        for key in list(gone):
+            if key in boards or now - gone[key]["gone"] > GONE_KEEP:
+                del gone[key]
+        if last is not None:
+            for b in last["boards"]:
+                if b["id"] not in boards and not b["gone"] and b["id"] not in gone:
+                    gone[b["id"]] = dict(b, gone=round(now), ports=[])
+        users = holders([p for b in boards.values() for p in b["ports"]])
+        shown = []
+        for b in sorted(boards.values(), key=lambda b: (b["kind"] == "serial", -b["since"])):
+            shown.append(dict(b, ports=[{"dev": p, "users": users.get(p, [])} for p in b["ports"]]))
+        shown += sorted(gone.values(), key=lambda b: -b["gone"])
+        state = {
+            "boards": shown,
+            "others": sorted(others.values(), key=lambda o: -o["since"]),
+            "attention": len(shown) > 0,
+        }
+        if state != last:
+            try:
+                sys.stdout.write(json.dumps(state) + "\n")
+                sys.stdout.flush()
+            except BrokenPipeError:
+                return 0
+            last = state
+
+        readable, _, _ = select.select([sys.stdin], [], [], TICK)
+        if readable and not sys.stdin.readline():
+            return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,356 @@
+#!/usr/bin/python3
+"""Watches how the machine is doing for the upkeep tile: whether it needs a
+reboot, pending updates, failed systemd units, the last snapshot and free
+space. It only looks; it never updates, restarts or asks for a password.
+It prints one JSON line at the start, whenever something changes and at
+least once a minute:
+
+  {"attention": bool, "items": [{"key", "state", "title", "detail", "lines"}],
+   "reboot": {...}, "updates": {...}, "units": [...], "snapshot": {...},
+   "disks": [...]}
+
+items are the tile's rows, in order: state is "bad" (red), "warn" (yellow),
+"ok" (green) or "unknown" (grey, not known yet); lines say more where
+there's room (the packages, the units). attention is whether any of it is
+worth a look: a reboot or restart that's due, a failed unit, or a disk
+running out. Pending updates alone aren't: there almost always are some.
+
+  - Reboot: the running kernel's modules are gone from /usr/lib/modules
+    (a newer kernel replaced them), or the microcode, systemd, glibc, the
+    firmware or the NVIDIA driver were upgraded since the boot, going by
+    /var/log/pacman.log.
+  - Updates: checkupdates for the repos, yay -Qua or paru -Qua for the AUR
+    and omarchy-update-available for Omarchy, every 30 minutes in the
+    background; they need the network, so a check that fails is tried
+    again in 5.
+  - Snapshot: snapper's list needs root, so this goes by when /.snapshots
+    last changed, which a new snapshot (or snapper's cleanup) does.
+  - Disks: / and /home when it's another filesystem; under 10% free is a
+    warning, under 5% bad.
+
+  upkeep
+
+It exits when stdin closes, with the shell."""
+
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+TICK = 5.0
+LOOK_S = 60
+UPDATES_S = 30 * 60
+UPDATES_RETRY_S = 5 * 60
+PACMAN_LOG = "/var/log/pacman.log"
+# Packages whose upgrade only takes effect with a reboot.
+REBOOT_PACKAGES = re.compile(r"^(systemd|glibc|linux-firmware(-\w+)?|amd-ucode|intel-ucode|nvidia(-open)?(-dkms)?|nvidia-utils)$")
+WARN_FREE = 0.10
+BAD_FREE = 0.05
+
+BOOT = 0.0
+with open("/proc/stat") as f:
+    for line in f:
+        if line.startswith("btime "):
+            BOOT = float(line.split()[1])
+
+
+def run(argv, timeout=10, env=None):
+    """(exit code, stdout) of a command; (None, "") when it can't run."""
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+        return p.returncode, p.stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+
+
+def span(seconds):
+    """"12m", "3h", "4d"."""
+    s = max(0, int(seconds))
+    if s < 3600:
+        return "%dm" % max(1, s // 60)
+    if s < 86400:
+        return "%dh" % (s // 3600)
+    return "%dd" % (s // 86400)
+
+
+# ---- Reboot.
+
+log_seen = (0, 0)
+log_since_boot = []
+
+
+def upgraded_since_boot():
+    """The packages upgraded since the boot, newest last, from pacman's log;
+    read again only when it changed."""
+    global log_seen, log_since_boot
+    try:
+        st = os.stat(PACMAN_LOG)
+    except OSError:
+        return []
+    if (st.st_mtime, st.st_size) == log_seen:
+        return log_since_boot
+    log_seen = (st.st_mtime, st.st_size)
+    out = []
+    boot = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(BOOT))
+    try:
+        with open(PACMAN_LOG, errors="replace") as f:
+            for line in f:
+                # [2026-09-18T00:42:30+0200] [ALPM] upgraded systemd (a -> b)
+                if "[ALPM] upgraded " not in line or line[1:20] < boot:
+                    continue
+                m = re.search(r"\[ALPM\] upgraded (\S+) \((\S+) -> (\S+)\)", line)
+                if m:
+                    out.append(m.group(1))
+    except OSError:
+        pass
+    log_since_boot = out
+    return out
+
+
+def reboot_state():
+    release = os.uname().release
+    modules = "/usr/lib/modules"
+    kernel_gone = not os.path.isdir(os.path.join(modules, release))
+    installed = ""
+    if kernel_gone:
+        # The kernel that replaced it: the same flavor ("-omarchy"), newest.
+        flavor = release.rsplit("-", 1)[-1]
+        try:
+            dirs = [d for d in os.listdir(modules) if d.endswith("-" + flavor) and os.path.isdir(os.path.join(modules, d, "kernel"))]
+            dirs.sort(key=lambda d: os.path.getmtime(os.path.join(modules, d)))
+            installed = dirs[-1] if dirs else ""
+        except OSError:
+            pass
+    packages = []
+    for name in upgraded_since_boot():
+        if REBOOT_PACKAGES.match(name) and name not in packages:
+            packages.append(name)
+    return {"needed": kernel_gone, "running": release, "installed": installed, "packages": packages, "up": round(time.time() - BOOT)}
+
+
+def short_kernel(release):
+    """"7.2.5" from "7.2.5-3-omarchy"."""
+    return release.split("-", 1)[0]
+
+
+# ---- Updates, in the background.
+
+updates = {"repo": [], "aur": [], "omarchy": "", "checked": 0, "error": "", "checking": False}
+updates_lock = threading.Lock()
+updates_changed = threading.Event()
+
+
+def parse_updates(text):
+    """[{name, old, new}] from "name old -> new" lines; yay adds "[1d5h]"."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^(\S+)\s+(\S+)\s+->\s+(\S+)", line.strip())
+        if m:
+            out.append({"name": m.group(1), "old": m.group(2), "new": m.group(3)})
+    return out
+
+
+def check_updates():
+    env = dict(os.environ)
+    env.setdefault("OMARCHY_PATH", "/usr/share/omarchy")
+    error = ""
+    repo, aur, omarchy = [], [], ""
+    if shutil.which("checkupdates"):
+        # 0: updates, 2: none, anything else: it couldn't check.
+        code, out = run(["checkupdates", "--nocolor"], timeout=120, env=env)
+        if code == 0:
+            repo = parse_updates(out)
+        elif code != 2:
+            error = "couldn't check (offline?)"
+    helper = shutil.which("yay") or shutil.which("paru")
+    if helper and not error:
+        code, out = run([helper, "-Qua"], timeout=120, env=env)
+        names = {u["name"] for u in repo}
+        aur = [u for u in parse_updates(out) if u["name"] not in names]
+    if shutil.which("omarchy-update-available") and not error:
+        code, out = run(["omarchy-update-available"], timeout=60, env=env)
+        if code == 0:
+            line = (out.strip().splitlines() or [""])[0]
+            m = re.match(r"^omarchy(-dev)?\s+\S+\s+->\s+(\S+)", line)
+            dev = re.match(r"^omarchy-dev-checkout (\d+) new", line)
+            omarchy = re.sub(r"-\d+$", "", m.group(2)) if m else ("%s new commits" % dev.group(1) if dev else "available")
+    with updates_lock:
+        if error:
+            updates.update({"error": error, "checking": False, "checked": updates["checked"]})
+        else:
+            updates.update({"repo": repo, "aur": aur, "omarchy": omarchy, "checked": round(time.time()), "error": "", "checking": False})
+    updates_changed.set()
+
+
+def start_check():
+    with updates_lock:
+        if updates["checking"]:
+            return
+        updates["checking"] = True
+    threading.Thread(target=check_updates, daemon=True).start()
+
+
+# ---- Units, snapshot, disks.
+
+def failed_units():
+    out = []
+    for scope in ([], ["--user"]):
+        code, text = run(["systemctl"] + scope + ["--failed", "--no-legend", "--plain"])
+        for line in text.splitlines():
+            parts = line.split(None, 4)
+            if parts:
+                out.append({"unit": parts[0], "user": bool(scope), "description": parts[4] if len(parts) > 4 else ""})
+    return out
+
+
+def snapshot_state():
+    try:
+        return {"at": round(os.stat("/.snapshots").st_mtime)}
+    except OSError:
+        return None
+
+
+def mount_sources():
+    """mount point -> source device, from mountinfo."""
+    out = {}
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                fields = line.split()
+                if "-" in fields:
+                    i = fields.index("-")
+                    out[fields[4]] = fields[i + 2]
+    except OSError:
+        pass
+    return out
+
+
+def disks():
+    sources = mount_sources()
+    points = ["/"]
+    if "/home" in sources and sources.get("/home") != sources.get("/"):
+        points.append("/home")
+    out = []
+    for p in points:
+        try:
+            st = os.statvfs(p)
+        except OSError:
+            continue
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        if total > 0:
+            out.append({"mount": p, "free": free, "total": total, "share": round(free / total, 3)})
+    return out
+
+
+def size(n):
+    for unit in ("B", "K", "M", "G", "T"):
+        if n < 1024 or unit == "T":
+            return ("%.0f%s" if n >= 10 or unit == "B" else "%.1f%s") % (n, unit)
+        n /= 1024.0
+
+
+# ---- The rows.
+
+def items_of(reboot, upd, units, snap, ds, now):
+    items = []
+
+    if reboot["needed"]:
+        detail = "kernel %s installed, %s running" % (short_kernel(reboot["installed"]), short_kernel(reboot["running"])) if reboot["installed"] else "kernel %s is gone" % short_kernel(reboot["running"])
+        items.append({"key": "reboot", "state": "bad", "title": "Reboot needed", "detail": detail, "lines": []})
+    elif reboot["packages"]:
+        items.append({"key": "reboot", "state": "warn", "title": "Restart suggested", "detail": ", ".join(reboot["packages"][:3]) + " updated since boot", "lines": []})
+    else:
+        items.append({"key": "reboot", "state": "ok", "title": "No reboot needed", "detail": "up " + span(reboot["up"]) + " · kernel " + short_kernel(reboot["running"]), "lines": []})
+
+    n = len(upd["repo"]) + len(upd["aur"])
+    if upd["checked"] == 0:
+        items.append({"key": "updates", "state": "unknown", "title": "Updates", "detail": upd["error"] or "checking…", "lines": []})
+    else:
+        parts = []
+        if upd["aur"]:
+            parts.append("%d AUR" % len(upd["aur"]))
+        if upd["omarchy"]:
+            parts.append("Omarchy " + upd["omarchy"])
+        ago = now - upd["checked"]
+        parts.append(upd["error"] or ("checked just now" if ago < 60 else "checked %s ago" % span(ago)))
+        # Omarchy and kernels first, they're the ones that matter most.
+        listed = sorted(upd["repo"] + upd["aur"], key=lambda u: (not u["name"].startswith("omarchy"), not u["name"].startswith("linux"), u["name"]))
+        items.append({
+            "key": "updates", "state": "warn" if n or upd["omarchy"] else "ok",
+            "title": ("%d update%s" % (n, "" if n == 1 else "s")) if n else ("Omarchy update" if upd["omarchy"] else "Up to date"),
+            "detail": " · ".join(parts),
+            "lines": ["%s %s → %s" % (u["name"], u["old"], u["new"]) for u in listed],
+        })
+
+    if units:
+        names = [u["unit"] for u in units]
+        items.append({"key": "units", "state": "bad", "title": "%d failed unit%s" % (len(units), "" if len(units) == 1 else "s"),
+                      "detail": ", ".join(names[:3]) + ("…" if len(names) > 3 else ""),
+                      "lines": ["%s%s%s" % (u["unit"], " (user)" if u["user"] else "", " · " + u["description"] if u["description"] else "") for u in units]})
+    else:
+        items.append({"key": "units", "state": "ok", "title": "No failed units", "detail": "system and user", "lines": []})
+
+    if snap:
+        age = now - snap["at"]
+        items.append({"key": "snapshot", "state": "ok" if age < 30 * 86400 else "warn", "title": "Snapshot " + span(age) + " ago",
+                      "detail": time.strftime("%-d %b %H:%M", time.localtime(snap["at"])), "lines": []})
+
+    for d in ds:
+        share = d["share"]
+        state = "bad" if share < BAD_FREE else "warn" if share < WARN_FREE else "ok"
+        items.append({"key": "disk:" + d["mount"], "state": state, "title": "%s %d%% free" % (d["mount"], round(share * 100)),
+                      "detail": "%s of %s" % (size(d["free"]), size(d["total"])), "lines": []})
+    return items
+
+
+def main():
+    last_look = 0
+    last_check = 0
+    last_print = 0
+    printed = None
+    reboot = units = snap = ds = None
+
+    while True:
+        now = time.time()
+        with updates_lock:
+            due = UPDATES_RETRY_S if updates["error"] else UPDATES_S
+            idle = not updates["checking"]
+        if idle and now - last_check >= due:
+            last_check = now
+            start_check()
+        if now - last_look >= LOOK_S or reboot is None or updates_changed.is_set():
+            updates_changed.clear()
+            last_look = now
+            reboot, units, snap, ds = reboot_state(), failed_units(), snapshot_state(), disks()
+
+        with updates_lock:
+            upd = {k: (list(v) if isinstance(v, list) else v) for k, v in updates.items()}
+        items = items_of(reboot, upd, units, snap, ds, now)
+        attention = any(i["state"] == "bad" for i in items) or any(i["state"] == "warn" and (i["key"] == "reboot" or i["key"].startswith("disk:")) for i in items)
+        data = {
+            "attention": attention, "items": items, "reboot": reboot,
+            "updates": {"repo": upd["repo"], "aur": upd["aur"], "omarchy": upd["omarchy"], "checked": upd["checked"], "error": upd["error"]},
+            "units": units, "snapshot": snap, "disks": ds,
+        }
+        line = json.dumps(data)
+        if line != printed or now - last_print >= LOOK_S:
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except BrokenPipeError:
+                return 0
+            printed, last_print = line, now
+
+        readable, _, _ = select.select([sys.stdin], [], [], TICK)
+        if readable and not sys.stdin.readline():
+            return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

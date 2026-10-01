@@ -2,7 +2,7 @@
 
 var MAX_TILES = 6
 // What a slot can show.
-var KINDS = ["github", "herdr", "music", "tasks", "plugin", "workspace"]
+var KINDS = ["github", "herdr", "music", "tasks", "plugin", "workspace", "upkeep", "projects", "devices", "board"]
 var ACTIVITY_DAYS = 28
 
 // "owner/repo" from what people paste: a GitHub URL, an SSH remote or the
@@ -24,8 +24,10 @@ function normalizeBranch(text) {
 
 // The six slots as saved: { kind: "github", repo, branch }, { kind: "herdr" },
 // { kind: "music" }, { kind: "tasks", tools }, { kind: "plugin", plugin },
-// { kind: "workspace", workspace } or { kind: "empty" }; any filled one can carry hideOnLock: true, to stay
-// off the lock screen. A repo
+// { kind: "workspace", workspace }, { kind: "upkeep" }, { kind: "projects",
+// folder }, { kind: "devices" }, { kind: "board", path } or { kind: "empty" };
+// any filled one can carry hideOnLock: true, to stay off the lock screen.
+// A repo
 // slot keeps what was typed even before it's a repo, so the slot stays one.
 // A bare repo string or an entry without a kind is a repo; a shorter list
 // fills the first slots. Any kind can fill any number of slots.
@@ -42,6 +44,8 @@ function slotList(value) {
       : kind === "tasks" ? { kind: kind, tools: toolList(entry.tools) }
       : kind === "plugin" ? { kind: kind, plugin: String(entry.plugin || "").trim() }
       : kind === "workspace" ? { kind: kind, workspace: String(entry.workspace || "").trim() }
+      : kind === "projects" ? { kind: kind, folder: String(entry.folder || "").trim() }
+      : kind === "board" ? { kind: kind, path: String(entry.path || "").trim() }
       : { kind: kind }
     if (kind !== "empty" && entry.hideOnLock === true) slot.hideOnLock = true
     out.push(slot)
@@ -54,7 +58,8 @@ function slotList(value) {
 // once one is set.
 function tileList(value) {
   return slotList(value).filter(function(t) {
-    return t.kind !== "empty" && (t.kind !== "github" || normalizeRepo(t.repo) !== "") && (t.kind !== "plugin" || t.plugin !== "") && (t.kind !== "workspace" || t.workspace !== "")
+    return t.kind !== "empty" && (t.kind !== "github" || normalizeRepo(t.repo) !== "") && (t.kind !== "plugin" || t.plugin !== "")
+      && (t.kind !== "workspace" || t.workspace !== "") && (t.kind !== "board" || t.path !== "")
   })
 }
 
@@ -71,7 +76,11 @@ var KIND_OPTIONS = [
   { value: "tasks", label: "Tasks" },
   { value: "music", label: "Now playing" },
   { value: "plugin", label: "Installed plugin" },
-  { value: "workspace", label: "Workspace (live)" }
+  { value: "workspace", label: "Workspace (live)" },
+  { value: "upkeep", label: "Upkeep" },
+  { value: "projects", label: "Local repos" },
+  { value: "devices", label: "USB devices" },
+  { value: "board", label: "KiCad board" }
 ]
 
 // Extra programs for the tasks tile to watch, from a list or what's typed:
@@ -95,6 +104,18 @@ function taskTools(tiles) {
     if (tiles[i].kind !== "tasks") continue
     var tools = tiles[i].tools || []
     for (var j = 0; j < tools.length; j++) if (out.indexOf(tools[j]) === -1) out.push(tools[j])
+  }
+  return out
+}
+
+// What one watcher for several slots of a kind is given: each slot's folder
+// (projects) or path (board) as typed, once.
+function slotArgs(tiles, kind, key) {
+  var out = []
+  for (var i = 0; i < tiles.length; i++) {
+    if (tiles[i].kind !== kind) continue
+    var value = String(tiles[i][key] || "")
+    if (out.indexOf(value) === -1) out.push(value)
   }
   return out
 }
