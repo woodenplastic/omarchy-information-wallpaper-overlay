@@ -74,10 +74,6 @@ var KIND_OPTIONS = [
   { value: "workspace", label: "Workspace (live)" }
 ]
 
-function kindGlyph(kind) {
-  return kind === "github" ? "\uf09b" : kind === "herdr" ? "\udb81\udea9" : kind === "tasks" ? "\uf085" : kind === "music" ? "\uf001" : kind === "plugin" ? "\uf12e" : kind === "workspace" ? "\uf108" : ""
-}
-
 // Extra programs for the tasks tile to watch, from a list or what's typed:
 // names only, split on commas and spaces.
 function toolList(value) {

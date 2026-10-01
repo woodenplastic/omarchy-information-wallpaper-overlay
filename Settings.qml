@@ -119,9 +119,22 @@ Panel {
     var out = []
     for (var i = 0; i < root.drafts.length; i++) {
       var d = root.drafts[i]
-      if (d.kind !== "empty" && (d.kind !== "github" || Model.normalizeRepo(d.repo)) && (d.kind !== "plugin" || d.plugin) && (d.kind !== "workspace" || d.workspace)) out.push({ slot: i, kind: d.kind })
+      if (d.kind !== "empty" && (d.kind !== "github" || Model.normalizeRepo(d.repo)) && (d.kind !== "plugin" || d.plugin) && (d.kind !== "workspace" || d.workspace)) out.push({ slot: i, kind: d.kind, label: root.slotLabel(d) })
     }
     return out
+  }
+
+  // What a filled slot shows, in a word or two for the preview: the repo,
+  // plugin or workspace by name, otherwise the kind.
+  function slotLabel(d) {
+    function optionLabel(options, value) {
+      var o = options.filter(function(o) { return o.value === value })[0]
+      return o ? o.label : value
+    }
+    if (d.kind === "github") return Model.normalizeRepo(d.repo).split("/")[1]
+    if (d.kind === "plugin") return optionLabel(root.pluginOptions, d.plugin)
+    if (d.kind === "workspace") return optionLabel(root.workspaceOptions, d.workspace)
+    return optionLabel(Model.KIND_OPTIONS, d.kind)
   }
 
   // The plugins a plugin slot can show; a name two plugins share gets its id.
@@ -268,13 +281,15 @@ Panel {
               border.color: Util.alpha(Color.accent, 0.4)
 
               Row {
+                id: slotTag
                 anchors.centerIn: parent
                 spacing: Style.space(5)
 
                 Text {
+                  id: slotTagNumber
                   anchors.verticalCenter: parent.verticalCenter
                   textFormat: Text.PlainText
-                  text: String(parent.parent.slot.slot + 1)
+                  text: String(slotTag.parent.slot.slot + 1)
                   color: root.dim
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -282,11 +297,13 @@ Panel {
                 }
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
+                  width: Math.min(implicitWidth, slotTag.parent.width - slotTagNumber.width - slotTag.spacing - Style.space(10))
+                  elide: Text.ElideRight
                   textFormat: Text.PlainText
-                  text: Model.kindGlyph(parent.parent.slot.kind)
+                  text: slotTag.parent.slot.label || ""
                   color: Color.accent
                   font.family: Style.font.family
-                  font.pixelSize: Style.font.body
+                  font.pixelSize: Style.font.caption
                 }
               }
             }
