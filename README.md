@@ -15,7 +15,7 @@ need an app open for:
 - **Now playing:** the cover, title, artist and how far into the track.
 - **Any installed plugin:** its menu, live, or its own `DeskTile.qml`.
 - **A workspace, live:** its windows where they are, as they are right now.
-- **Upkeep:** updates waiting, whether a reboot is needed, failed units, the
+- **Omarchy:** updates waiting, whether a reboot is needed, failed units, the
   last snapshot and free space.
 - **Local repos:** which repos in a folder have changes not committed or
   commits not pushed.
@@ -225,10 +225,12 @@ workspaces render at 60 in that time too. A workspace slot starts out kept off t
 screen, since anyone there would see its windows; its lock button changes
 that.
 
-## The upkeep tile
+## The Omarchy tile
 
-How the machine is doing, one row each, red or yellow when something needs
-a look:
+How the machine is doing, at a glance: a ring with an arc for each check,
+green, yellow or red, and beside it the verdict in large type ("All good",
+"Nothing urgent", "Reboot needed", "2 things need you") with what else is
+going on. Under it a card for each check, with its number large:
 
 - **Reboot:** needed once the running kernel's modules are gone (a newer
   kernel replaced it); suggested when the microcode, systemd, glibc, the
@@ -243,9 +245,12 @@ a look:
 - **Free space** on `/`, and on `/home` when it's another filesystem:
   yellow under 10%, red under 5%.
 
-Where there's room, a row lists more under it: the packages with their
-versions, Omarchy and kernels first, and the units that failed, the red rows
-first. The tile only watches: it never updates, restarts or asks for a
+The free space and the snapshot's age (a month fills it) get a bar, and
+the updates one split between the repos and the AUR. Below the cards, as
+room allows, the units that failed, then the packages waiting with their
+versions, Omarchy first and AUR ones marked. On a small tile those lists go
+first, then the cards' small print, and on the smallest the cards that need
+a look stay. The tile only watches: it never updates, restarts or asks for a
 password.
 
 ## The local repos tile
@@ -397,7 +402,7 @@ The popup holds everything:
   room; it comes back by itself. A repo then shows while a workflow runs or
   its latest run failed, the agents while one works or waits for you, tasks
   while one runs and for five minutes after one ends, a workspace while it
-  has windows, upkeep while a reboot is due, a unit failed or a disk runs
+  has windows, Omarchy while a reboot is due, a unit failed or a disk runs
   low (updates alone don't count), local repos while one touched in the
   last two weeks has changes or commits not pushed, USB devices while a dev
   board is plugged in, and a board for 30 minutes after it's saved or while
@@ -456,7 +461,7 @@ at it, so plugin updates reach the lock screen without adding it again.
   `gh auth login`, for repo tiles. The overlay uses that login, so private
   repos work without a token to set up.
 - [herdr](https://herdr.dev), for the agents tile.
-- `pacman-contrib` (`checkupdates`), for the upkeep tile's update count;
+- `pacman-contrib` (`checkupdates`), for the Omarchy tile's update count;
   `yay` or `paru` for the AUR's.
 - [KiCad](https://www.kicad.org) with `kicad-cli pcb render` (tested with
   10.0), for the board tile.

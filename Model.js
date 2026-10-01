@@ -81,7 +81,7 @@ var KIND_OPTIONS = [
   { value: "music", label: "Now playing" },
   { value: "plugin", label: "Installed plugin" },
   { value: "workspace", label: "Workspace (live)" },
-  { value: "upkeep", label: "Upkeep" },
+  { value: "upkeep", label: "Omarchy" },
   { value: "projects", label: "Local repos" },
   { value: "devices", label: "USB devices" },
   { value: "board", label: "KiCad board" }
