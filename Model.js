@@ -355,9 +355,10 @@ function trackRuns(results, seen, nowMs) {
 }
 
 // A repo's runs for the live view: the running ones, and those that ended
-// less than LIVE_HOLD_MS ago.
+// less than LIVE_HOLD_MS ago. A stale result's runs aren't live: what they
+// did since, GitHub couldn't say.
 function liveRuns(result, seen, nowMs) {
-  var runs = result && result.ok && result.runs ? result.runs : []
+  var runs = result && result.ok && !result.stale && result.runs ? result.runs : []
   var out = []
   for (var i = 0; i < runs.length; i++) {
     var s = seen[runs[i].id]

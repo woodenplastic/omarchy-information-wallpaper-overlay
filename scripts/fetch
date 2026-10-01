@@ -75,9 +75,29 @@ query($owner: String!, $name: String!, $qualified: String!, $since: GitTimestamp
 }'
 
 # Each result carries the spec it was asked for as `query`, so the desk finds
-# it again even when GitHub answers with a renamed repo.
+# it again even when GitHub answers with a renamed repo. "offline" says
+# GitHub couldn't be reached at all.
 fail_json() {
-  jq -n --arg query "$SPEC" --arg repo "$1" --arg error "$2" '{query: $query, repo: $repo, ok: false, error: $error}'
+  jq -n --arg query "$SPEC" --arg repo "$1" --arg error "$2" --argjson offline "${3:-false}" \
+    '{query: $query, repo: $repo, ok: false, error: $error, offline: $offline}'
+}
+
+# Whether gh's error says the network is down, as it is early in a boot.
+is_offline() {
+  grep -qiE 'error connecting to|dial tcp|no such host|network is unreachable|connection refused|i/o timeout|TLS handshake timeout|connection reset|could not resolve host' <<<"$1"
+}
+
+# The last good result for this spec from the cache, marked stale with why
+# ($1) and whether it was for being offline ($2); nothing when there's none.
+# A fetch that couldn't ask GitHub keeps it, so a boot without network
+# doesn't trade the tiles' data for an error.
+last_good() {
+  [[ -s $OUT ]] || return 1
+  local kept
+  kept=$(jq -c --arg q "$SPEC" --arg why "$1" --argjson offline "$2" '
+    first(.fetched as $at | .results[]? | select(.query == $q and .ok == true)
+      | .fetched //= $at | . + {stale: true, staleError: $why, offline: $offline})' "$OUT" 2>/dev/null)
+  [[ -n $kept ]] && printf '%s\n' "$kept"
 }
 
 # Commits per day since $4 (a timestamp) as {"YYYY-MM-DD": count}, into $5.
@@ -212,11 +232,21 @@ fetch_repo() {
   local has_branch=false
   [[ -n $branch ]] && has_branch=true
 
-  local response error
+  local response error answer
   if ! response=$(gh api graphql -f query="$QUERY" -F owner="$owner" -F name="$name" \
     -F qualified="refs/heads/${branch:-_}" -F hasBranch="$has_branch" 2>&1); then
-    error=$(jq -r '.errors[0].message // empty' <<<"$response" 2>/dev/null)
-    fail_json "$repo" "${error:-$(head -c 200 <<<"$response")}" >"$out"
+    # gh prints GitHub's JSON and then its own "gh: …" line; the JSON is enough.
+    answer=$(jq -rn 'first(inputs | objects | .errors[0].message // empty)' <<<"$response" 2>/dev/null)
+    error=${answer:-$(head -c 200 <<<"$response")}
+    local offline=false
+    is_offline "$error" && offline=true
+    # GitHub's own answer about the repo stands; anything else (no network,
+    # a rate limit, GitHub down) keeps what the last fetch had.
+    if [[ -z $answer || $answer == *"rate limit"* ]] && last_good "$error" "$offline" >"$out"; then
+      return
+    fi
+    [[ $offline == true ]] && error="Offline: GitHub can't be reached"
+    fail_json "$repo" "$error" "$offline" >"$out"
     return
   fi
 

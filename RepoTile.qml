@@ -61,9 +61,13 @@ Rectangle {
   readonly property string ageText: {
     if (!widget) return ""
     if (widget.fetching) return "updating…"
-    if (!widget.fetchedAt) return ""
-    var age = Model.relativeTime(widget.fetchedAt, nowMs)
-    return age === "now" ? "updated just now" : "updated " + age + " ago"
+    // A stale result is the last one GitHub gave, kept through a failed fetch.
+    var at = (result && result.fetched) || widget.fetchedAt
+    if (!at) return ""
+    var age = Model.relativeTime(at, nowMs)
+    var updated = age === "now" ? "updated just now" : "updated " + age + " ago"
+    if (result && result.stale) return (result.offline ? "offline" : "couldn't update") + " · " + updated
+    return updated
   }
 
   component Label: Text {
@@ -140,7 +144,8 @@ Rectangle {
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
         maximumLineCount: 3
-        color: root.result ? root.widget.failureColor : root.dim
+        // No network is no fault of the repo's.
+        color: root.result && !root.result.offline ? root.widget.failureColor : root.dim
         text: root.result ? (root.result.error || "")
           : root.widget && root.widget.fetchError ? root.widget.fetchError
           : "Loading…"

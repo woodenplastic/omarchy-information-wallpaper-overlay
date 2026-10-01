@@ -120,6 +120,8 @@ BarWidget {
 
   readonly property var shownResults: repos.map(function(entry) { return Model.resultFor(root.results, entry) })
   readonly property bool anyRunning: shownResults.some(function(r) { return Model.isRunning(r) })
+  // The last fetch couldn't reach GitHub (see scripts/fetch).
+  readonly property bool offline: shownResults.some(function(r) { return !!r && r.offline === true })
   readonly property string ciState: Model.overallState(shownResults)
 
   function fetch() {
@@ -364,11 +366,12 @@ BarWidget {
     }
   }
 
-  // Every 5 minutes, every 30 seconds while a workflow runs.
+  // Every 5 minutes, every 30 seconds while a workflow runs, every minute
+  // while GitHub can't be reached (as early in a boot, before the network).
   Timer {
     running: root.isPrimary && root.specs.length > 0
     repeat: true
-    interval: root.anyRunning ? 30000 : 300000
+    interval: root.anyRunning ? 30000 : root.offline ? 60000 : 300000
     onTriggered: root.fetch()
   }
 

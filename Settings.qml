@@ -726,6 +726,7 @@ Panel {
             var parts = root.widget.repos.length > 0 ? ["Signed in through the gh CLI"] : []
             parts.push("tiles on the first monitor")
             if (root.widget.fetching) parts.push("updating…")
+            else if (root.widget.offline) parts.push("offline, trying again every minute")
             else if (root.widget.fetchedAt) parts.push("updated " + Model.relativeTime(root.widget.fetchedAt, root.widget.nowMs))
             return parts.join("  ·  ")
           }

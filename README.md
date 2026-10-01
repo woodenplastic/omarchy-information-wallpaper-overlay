@@ -268,6 +268,11 @@ at it, so plugin updates reach the lock screen without adding it again.
 The data is fetched every 5 minutes, and every 30 seconds while a workflow is
 running. Changing the repos fetches right away.
 
+Without a network, as early in a boot, a repo tile keeps what the last fetch
+got and says "offline" beside its age, and the fetch is tried again every
+minute until GitHub answers. A repo that was never fetched says it's offline
+in place of its data.
+
 The year of commits comes from GitHub's weekly statistics when GitHub has
 them ready, which only covers the default branch. Otherwise it's counted from
 the history once and then brought up to date with just the newest commits;
