@@ -245,6 +245,12 @@ popup: locked, that tile stays off the lock screen, and the others share its
 room there. A private repo or your agents' work can stay on the desktop only.
 Nothing in a tile can be clicked or typed into there either.
 
+The tiles fade in once they have something to show, so a fresh lock never
+flashes empty tiles. As a Lock Screen Explorer boot screen, which is a
+picture taken ahead of time, the design shows the tiles as empty panes and
+only the password field in the card: whatever the tiles held would be out of
+date by the next boot.
+
 The overlay only writes that design file where no file of that name is, and
 only reuses or removes it while it's exactly the file it wrote. A design of
 the same name that isn't the plugin's, or that you edited, is left alone;

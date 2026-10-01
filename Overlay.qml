@@ -254,6 +254,8 @@ BarWidget {
   //      listed at the start and when the popup opens.
 
   property var installedPlugins: []
+  // Listed once: before that, a plugin tile can't tell a missing plugin.
+  property bool pluginsListed: false
 
   function refreshPlugins() {
     if (pluginsProc.running) return
@@ -269,6 +271,7 @@ BarWidget {
         var list
         try { list = JSON.parse(text) } catch (e) { return }
         if (Array.isArray(list) && JSON.stringify(list) !== JSON.stringify(root.installedPlugins)) root.installedPlugins = list
+        root.pluginsListed = true
       }
     }
   }

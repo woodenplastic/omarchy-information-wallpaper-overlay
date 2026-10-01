@@ -27,8 +27,12 @@ Item {
       root.shellConfigText = text()
       var next = Model.barEntry(root.shellConfigText, root.moduleName)
       if (next) root.settings = next
+      root.settingsRead = true
     }
+    onLoadFailed: root.settingsRead = true
   }
+
+  property bool settingsRead: false
 
   // The whole file too, for the settings of plugins shown in tiles.
   property string shellConfigText: ""
@@ -49,6 +53,10 @@ Item {
   // Set by the design: on the real lock screen or its full preview, not in
   // the explorer's thumbnails, which would each ask herdr and watch tasks.
   property bool live: false
+
+  // Whether the tiles have what they need to be shown: the settings, and the
+  // plugins listed, without which a plugin tile can't tell what's installed.
+  readonly property bool ready: settingsRead && (pluginsListed || !Model.hasKind(tiles, "plugin"))
 
   // ---- Data.
 
@@ -126,15 +134,17 @@ Item {
   Component.onDestruction: if (smoothWorkspaces) Util.execArgv(["bash", root.pluginDir + "/scripts/unfocused-fps", "restore", "lock"])
 
   // ---- Installed plugins, for plugin tiles (see the bar widget): listed
-  //      while live. The copies get a bar with the look's fallbacks, since
-  //      the lock screen has no bar.
+  //      in the thumbnails too, so they show the plugin's name, but copies
+  //      are only made while live. The copies get a bar with the look's
+  //      fallbacks, since the lock screen has no bar.
 
   readonly property string pluginDir: Qt.resolvedUrl("..").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
   property var installedPlugins: []
+  property bool pluginsListed: false
   readonly property bool hidePluginControls: option("hidePluginControls", true) === true
 
   Process {
-    running: root.live && Model.hasKind(root.tiles, "plugin")
+    running: Model.hasKind(root.tiles, "plugin")
     command: ["bash", root.pluginDir + "/scripts/plugins"]
     stdout: StdioCollector {
       waitForEnd: true
@@ -142,6 +152,7 @@ Item {
         var list
         try { list = JSON.parse(text) } catch (e) { return }
         if (Array.isArray(list) && JSON.stringify(list) !== JSON.stringify(root.installedPlugins)) root.installedPlugins = list
+        root.pluginsListed = true
       }
     }
   }

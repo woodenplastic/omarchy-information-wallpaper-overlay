@@ -296,8 +296,9 @@ Tile {
     // The plugin's own word that it has nothing to show is no failure.
     color: root.failure && !(root.info && root.info.optOut !== null && root.info.optOut !== undefined)
       ? (widget ? widget.failureColor : Color.urgent) : root.dim
+    // Until the plugins are listed, there's no telling whether it's installed.
     text: !root.entry.plugin ? "Pick a plugin in the settings"
-      : !root.info ? "Plugin not installed: " + root.entry.plugin
+      : !root.info ? (widget && widget.pluginsListed ? "Plugin not installed: " + root.entry.plugin : "")
       : root.failure
   }
 }

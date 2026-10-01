@@ -8,6 +8,8 @@ import "../Model.js" as Model
 // Information Wallpaper Overlay as a Lock Screen Explorer design: the tiles
 // fill the screen as they do the desktop, and a card in the middle holds the
 // clock, the CI status, agents waiting and the password field. scripts/lock-design puts it on.
+// As a boot screen (a snapshot, see snapshotMode) nothing on it is live, so
+// the tiles are empty panes and the card holds only the field.
 DesignBase {
   id: lock
   inputItem: field.input
@@ -27,16 +29,39 @@ DesignBase {
     onPositionChanged: lock.wakeRequested()
   }
 
+  // The tiles come in once they have something to show: the plugins listed,
+  // then a moment for them to gather their data, so a fresh lock never
+  // flashes "not installed" or empty tiles. Three seconds at most.
+  property bool tilesShown: false
+
+  Timer {
+    running: feed.ready && !lock.tilesShown
+    interval: 400
+    onTriggered: lock.tilesShown = true
+  }
+
+  Timer {
+    running: !lock.tilesShown
+    interval: 3000
+    onTriggered: lock.tilesShown = true
+  }
+
   Item {
     id: area
     anchors.fill: parent
+    opacity: lock.tilesShown || lock.snapshotMode ? 1 : 0
+
+    Behavior on opacity {
+      enabled: !lock.snapshotMode && feed.animations
+      NumberAnimation { duration: 450; easing.type: Easing.OutCubic }
+    }
 
     readonly property var rects: Model.tileRects(feed.tiles.length, width, height, feed.gap)
 
     Repeater {
       model: feed.tiles.length
 
-      Desk.TileView {
+      Item {
         required property int index
         readonly property var rect: area.rects[index] || { x: 0, y: 0, w: 0, h: 0 }
 
@@ -45,8 +70,20 @@ DesignBase {
         width: Math.round(rect.w)
         height: Math.round(rect.h)
 
-        widget: feed
-        entry: feed.tiles[index]
+        Desk.TileView {
+          anchors.fill: parent
+          active: !lock.snapshotMode
+          widget: feed
+          entry: feed.tiles[index]
+        }
+
+        // A boot screen shows the same panes, empty: what's in them would
+        // be days old by the time it's seen.
+        Desk.Tile {
+          anchors.fill: parent
+          visible: lock.snapshotMode
+          widget: feed
+        }
       }
     }
   }
@@ -78,6 +115,7 @@ DesignBase {
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         textFormat: Text.PlainText
+        visible: !lock.snapshotMode
         text: lock.clock("HH:mm")
         color: Color.lock.text
         font.family: Style.font.family
@@ -88,6 +126,7 @@ DesignBase {
       Text {
         anchors.horizontalCenter: parent.horizontalCenter
         textFormat: Text.PlainText
+        visible: !lock.snapshotMode
         text: lock.date("dddd, d MMMM")
         color: lock.withAlpha(Color.lock.text, 0.75)
         font.family: Style.font.family
@@ -96,7 +135,7 @@ DesignBase {
 
       Row {
         anchors.horizontalCenter: parent.horizontalCenter
-        visible: lock.ciState !== ""
+        visible: lock.ciState !== "" && !lock.snapshotMode
         spacing: 8
 
         Rectangle {
@@ -131,7 +170,7 @@ DesignBase {
       Row {
         readonly property int waiting: feed.herdr.active ? feed.herdr.counts.blocked : 0
         anchors.horizontalCenter: parent.horizontalCenter
-        visible: waiting > 0
+        visible: waiting > 0 && !lock.snapshotMode
         spacing: 8
 
         Rectangle {
