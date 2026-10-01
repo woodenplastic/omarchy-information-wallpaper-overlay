@@ -32,6 +32,14 @@ Tile {
     return "~" + Model.span(seconds)
   }
 
+  // "210 MB/s" for bytes a second.
+  function rate(bytes) {
+    var units = ["B/s", "kB/s", "MB/s", "GB/s"]
+    var n = Math.max(0, Number(bytes) || 0), i = 0
+    while (n >= 1000 && i < units.length - 1) { n /= 1000; i++ }
+    return (n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)) + " " + units[i]
+  }
+
   function stateWord(state) {
     if (state === "success") return "passed"
     if (state === "failure") return "failed"
@@ -172,6 +180,11 @@ Tile {
         readonly property bool tall: running && index < list.tall
         readonly property real expected: task.expected || 0
         readonly property bool over: expected > 0 && task.elapsed > expected
+        // A copy says how far into its input it is; that beats the last runs.
+        readonly property real progress: typeof task.progress === "number" ? task.progress : -1
+        readonly property bool measured: progress >= 0
+        readonly property real fraction: measured ? progress
+          : expected > 0 ? Math.min(1, task.elapsed / expected) : 0
         width: list.width
         height: tall ? list.tallHeight : list.rowHeight
         opacity: running ? 1 : 0.8
@@ -243,7 +256,11 @@ Tile {
             anchors.verticalCenter: spark.verticalCenter
             font.pixelSize: root.smallSize
             color: root.dim
-            text: row.expected <= 0 ? ""
+            text: row.measured
+              ? [Math.floor(row.progress * 100) + "%",
+                 row.task.rate > 0 ? root.rate(row.task.rate) : "",
+                 row.progress > 0.02 ? root.roughly(row.task.elapsed * (1 - row.progress) / row.progress) + " left" : ""].filter(function(s) { return s }).join("  ·  ")
+              : row.expected <= 0 ? ""
               : row.over ? "over the usual " + Model.span(row.expected)
               : root.roughly(row.expected - row.task.elapsed) + " left"
           }
@@ -281,10 +298,11 @@ Tile {
             }
           }
 
-          // Elapsed against the last runs of the same task in the same
-          // folder; full, and dimmer, once it's taking longer.
+          // How far into its input a copy is, or else the time against the
+          // last runs of the same task in the same folder; full, and dimmer,
+          // once it's taking longer.
           Rectangle {
-            visible: row.expected > 0
+            visible: row.measured || row.expected > 0
             anchors.bottom: parent.bottom
             width: parent.width
             height: list.barHeight
@@ -294,9 +312,9 @@ Tile {
             Rectangle {
               height: parent.height
               radius: parent.radius
-              width: parent.width * Math.min(1, row.expected > 0 ? row.task.elapsed / row.expected : 0)
+              width: parent.width * row.fraction
               color: root.stateColor("running")
-              opacity: row.over ? 0.45 : 0.9
+              opacity: row.over && !row.measured ? 0.45 : 0.9
               Behavior on width {
                 enabled: root.animate
                 NumberAnimation { duration: 2000 }

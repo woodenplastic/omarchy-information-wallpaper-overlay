@@ -4,7 +4,8 @@ copies. Every two seconds it looks through /proc for known tools, and prints
 one JSON line on stdout:
 
   {"tasks": [{"id", "label", "folder", "by", "state", "elapsed", "ago",
-              "cpu", "jobs", "step", "expected", "load"}]}
+              "cpu", "jobs", "step", "expected", "load", "pane", "progress",
+              "rate"}]}
 
 A task is the topmost matching process; what runs under it (compilers,
 linkers) counts as its jobs, and the newest of them that's busy says what
@@ -13,7 +14,11 @@ once it's run five seconds. expected is how long the same task in the same
 folder took the last times (the median of three; 0 when it hasn't run
 before), kept in $XDG_STATE_HOME/information-wallpaper-overlay/durations.json.
 load is its CPU over the last two minutes, one value per tick, as a share of
-the whole machine (0-100). The last
+the whole machine (0-100). pane is the herdr pane it runs in
+($HERDR_PANE_ID), "" outside herdr. A copy that reads one file start to end
+(dd, zstd, xz, ffmpeg, tar or 7z extracting) has progress, how far into
+that file it is (0-1), and rate, how fast it reads (bytes/s); for anything
+else progress is -1. The last
 tasks that ended stay in the list, and are kept in
 $XDG_STATE_HOME/information-wallpaper-overlay/tasks.json across restarts. Whether it passed comes from the shell hook
 (scripts/shell-hook.bash), which notes the exit status of terminal commands;
@@ -29,6 +34,7 @@ import json
 import os
 import re
 import select
+import stat
 import sys
 import time
 
@@ -281,6 +287,72 @@ def ancestors(pid, procs):
     return out
 
 
+def pane_of(pid, up):
+    """The herdr pane a process runs in, from its environment or else the
+    nearest of its parents': "w9:p7", or ""."""
+    for q in [pid] + up:
+        try:
+            with open("/proc/%d/environ" % q, "rb") as f:
+                env = f.read().split(b"\0")
+        except OSError:
+            continue
+        for var in env:
+            if var.startswith(b"HERDR_PANE_ID="):
+                return var[14:].decode(errors="replace")
+    return ""
+
+
+# Tools that read one input from start to end, so how far into it they are
+# says how far along the task is.
+COPIERS = {"dd", "zstd", "xz", "ffmpeg"}
+MIN_INPUT = 1 << 20
+
+
+def reads_through(argv):
+    tool, args = program(argv)
+    if tool in COPIERS:
+        return True
+    if tool == "tar":
+        first = args[0] if args else ""
+        return any(a in ("-x", "--extract", "--get") for a in args) or bool(re.match(r"^-?[A-Za-z]*x", first))
+    if tool == "7z":
+        words = positional(args)
+        return bool(words) and words[0] in ("x", "e")
+    return False
+
+
+def input_of(tree):
+    """The biggest regular file a process of the tree reads (opened
+    read-only): (path, position, size), or None."""
+    best = None
+    for q in tree:
+        try:
+            fds = os.listdir("/proc/%d/fd" % q)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink("/proc/%d/fd/%s" % (q, fd))
+                if not target.startswith("/") or target.startswith(("/dev/", "/proc/", "/sys/")):
+                    continue
+                st = os.stat("/proc/%d/fd/%s" % (q, fd))
+                if not stat.S_ISREG(st.st_mode) or st.st_size < MIN_INPUT or (best and st.st_size <= best[2]):
+                    continue
+                pos = flags = None
+                with open("/proc/%d/fdinfo/%s" % (q, fd)) as f:
+                    for line in f:
+                        if line.startswith("pos:"):
+                            pos = int(line.split()[1])
+                        elif line.startswith("flags:"):
+                            flags = int(line.split()[1], 8)
+                if pos is None or flags is None or flags & 3 != 0:
+                    continue
+                best = (target, pos, st.st_size)
+            except (OSError, ValueError):
+                continue
+    return best
+
+
 def cwd_of(pid):
     try:
         return os.readlink("/proc/%d/cwd" % pid)
@@ -457,11 +529,21 @@ def main():
                     "id": tid, "label": label, "folder": folder,
                     "by": by, "started": p["start"], "shells": [pid] + up, "ended": 0, "state": "running",
                     "expected": expected_of(durations, label + "\n" + folder), "load": [], "step": "", "step_at": 0,
+                    "pane": pane_of(pid, up), "copy": reads_through(p["argv"]), "progress": -1, "rate": 0, "input": None,
                 }
             ticks = max(0, sum(cpu_of.get(q, 0) - ended_of.get(q, 0) for q in tree))
             task["cpu"] = round(ticks / CLK / dt * 100)
             task["jobs"] = sum(1 for q in tree[1:] if q in busy)
             task["load"] = (task["load"] + [min(100, round(task["cpu"] / NCPU))])[-LOAD_KEEP:]
+            if task["copy"]:
+                read = input_of(tree)
+                before = task["input"]
+                if read:
+                    task["progress"] = round(min(1.0, read[1] / read[2]), 4)
+                    task["rate"] = round(max(0, read[1] - before[1]) / dt) if before and before[0] == read[0] else task["rate"]
+                else:
+                    task["progress"], task["rate"] = -1, 0
+                task["input"] = read
             # A step stays a moment after its process ends, so the row
             # doesn't blink between two compiles.
             step = step_of(tree, procs, busy, labels)
@@ -520,6 +602,9 @@ def main():
                 "step": t.get("step", "") if not t["ended"] else "",
                 "expected": t.get("expected", 0) if not t["ended"] else 0,
                 "load": t.get("load", []) if not t["ended"] else [],
+                "pane": t.get("pane", ""),
+                "progress": t.get("progress", -1) if not t["ended"] else -1,
+                "rate": t.get("rate", 0) if not t["ended"] else 0,
             })
         try:
             sys.stdout.write(json.dumps({"tasks": out}) + "\n")

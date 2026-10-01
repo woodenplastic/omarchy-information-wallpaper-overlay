@@ -103,7 +103,7 @@ Item {
 
   Desk.TasksFeed {
     id: tasksWatcher
-    active: root.live && Model.hasKind(root.tiles, "tasks")
+    active: root.live && (Model.hasKind(root.tiles, "tasks") || Model.hasKind(root.tiles, "herdr"))
     tools: Model.taskTools(root.tiles)
   }
 

@@ -4,7 +4,8 @@ import "Model.js" as Model
 
 // herdr's coding agents: how many are working, waiting for you, done or
 // idle, then each workspace with its agents, the state, what the agent is
-// on (its terminal title), the folder and how long it's been so. An agent
+// on (its terminal title), the folder and how long it's been so, and under
+// it the long tasks running in its pane (from the tasks watcher). An agent
 // waiting for you stands out; working ones pulse.
 Tile {
   id: root
@@ -12,6 +13,33 @@ Tile {
   readonly property var feed: widget ? widget.herdr : null
   readonly property bool ok: !!feed && feed.loaded && feed.error === "" && feed.agents.length > 0
   readonly property var counts: feed ? feed.counts : ({ working: 0, blocked: 0, done: 0, idle: 0 })
+
+  // The running tasks by the herdr pane they run in.
+  readonly property var tasksFeed: widget ? widget.tasksFeed : null
+  readonly property var paneTasks: {
+    var out = {}
+    var tasks = tasksFeed && tasksFeed.tasks ? tasksFeed.tasks : []
+    for (var i = 0; i < tasks.length; i++) {
+      var t = tasks[i]
+      if (t.state !== "running" || !t.pane) continue
+      if (!out[t.pane]) out[t.pane] = []
+      out[t.pane].push(t)
+    }
+    return out
+  }
+  readonly property int maxTaskLines: 2
+
+  function taskLines(agent) {
+    var list = agent ? root.paneTasks[agent.pane_id] : null
+    return list ? Math.min(root.maxTaskLines, list.length) : 0
+  }
+
+  // What an agent's tasks add to its row: their lines, tucked under the
+  // agent, and a little room after them.
+  function tasksHeight(agent, taskHeight) {
+    var n = root.taskLines(agent)
+    return n > 0 ? Math.round((n + 0.2) * taskHeight) : 0
+  }
 
   glowY: pad + header.height
 
@@ -146,8 +174,21 @@ Tile {
     width: parent.width
 
     readonly property real rowHeight: Math.round(root.bodySize * 1.75)
+    readonly property real taskHeight: Math.round(root.smallSize * 1.55)
     readonly property real room: root.area.height - y
-    readonly property var layout: root.ok ? Model.herdrRows(root.feed.groups, Math.max(1, Math.floor(room / rowHeight))) : { rows: [], hidden: 0 }
+    // As many rows as fit with their tasks under them: fewer rows are asked
+    // for until the rows, their tasks and the count of the rest fit.
+    readonly property var layout: {
+      if (!root.ok) return { rows: [], hidden: 0 }
+      var lay = null
+      for (var n = Math.max(1, Math.floor(room / rowHeight)); n >= 1; n--) {
+        lay = Model.herdrRows(root.feed.groups, n)
+        var h = lay.hidden > 0 ? rowHeight : 0
+        for (var i = 0; i < lay.rows.length; i++) h += rowHeight + root.tasksHeight(lay.rows[i].agent, taskHeight)
+        if (h <= room) break
+      }
+      return lay
+    }
     readonly property real sinceWidth: root.bodySize * 0.6 * 8
     readonly property real folderWidth: Math.min(width * 0.24, root.bodySize * 0.6 * 22)
 
@@ -161,13 +202,20 @@ Tile {
         readonly property var group: modelData.group
         readonly property string agentState: agent ? Model.agentState(agent.agent_status) : ""
         readonly property var seen: agent && root.feed ? root.feed.seen[agent.pane_id] : null
+        readonly property var tasks: agent ? root.paneTasks[agent.pane_id] || [] : []
         width: list.width
-        height: list.rowHeight
+        height: list.rowHeight + root.tasksHeight(agent, list.taskHeight)
+
+        Item {
+          id: line
+          width: parent.width
+          height: list.rowHeight
+        }
 
         // A workspace: its number and name.
         Row {
           visible: !row.agent
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenter: line.verticalCenter
           spacing: root.bodySize * 0.6
 
           Label {
@@ -188,7 +236,7 @@ Tile {
           id: dot
           visible: !!row.agent
           x: root.statSize * 0.5
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenter: line.verticalCenter
           agentState: row.agentState
         }
         Label {
@@ -196,7 +244,7 @@ Tile {
           visible: !!row.agent
           anchors.left: dot.right
           anchors.leftMargin: root.bodySize * 0.7
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenter: line.verticalCenter
           width: root.bodySize * 0.6 * 9
           text: row.agent ? row.agent.agent : ""
           color: row.agentState === "blocked" ? root.stateColor("blocked") : Color.accent
@@ -206,7 +254,7 @@ Tile {
           anchors.left: agentName.right
           anchors.right: folder.left
           anchors.rightMargin: root.bodySize
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenter: line.verticalCenter
           text: !row.agent ? ""
             : row.agentState === "blocked" ? "waiting for you  ·  " + (row.agent.terminal_title_stripped || "")
             : row.agent.terminal_title_stripped || row.agentState
@@ -217,7 +265,7 @@ Tile {
           visible: !!row.agent
           anchors.right: sinceLabel.left
           anchors.rightMargin: root.bodySize
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenter: line.verticalCenter
           width: list.folderWidth
           horizontalAlignment: Text.AlignRight
           text: row.agent ? Model.baseName(row.agent.foreground_cwd || row.agent.cwd) : ""
@@ -227,11 +275,62 @@ Tile {
           id: sinceLabel
           visible: !!row.agent
           anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
+          anchors.verticalCenter: line.verticalCenter
           width: list.sinceWidth
           horizontalAlignment: Text.AlignRight
           text: row.seen ? Model.since(row.seen.sinceMs, root.nowMs) : ""
           color: root.dim
+        }
+
+        // Its long tasks: what, what it's doing now, how long so far.
+        Repeater {
+          model: root.taskLines(row.agent)
+
+          Item {
+            required property int index
+            readonly property var task: row.tasks[index] || ({})
+            readonly property int more: index === root.maxTaskLines - 1 ? row.tasks.length - root.maxTaskLines : 0
+            x: agentName.x
+            y: Math.round(list.rowHeight * 0.85 + index * list.taskHeight)
+            width: row.width - x
+            height: list.taskHeight
+
+            Rectangle {
+              id: taskBlock
+              anchors.verticalCenter: parent.verticalCenter
+              width: root.smallSize * 0.55
+              height: width
+              radius: root.rounded ? width * 0.22 : 0
+              color: root.stateColor("working")
+            }
+            Label {
+              id: taskLabel
+              anchors.left: taskBlock.right
+              anchors.leftMargin: root.smallSize * 0.6
+              anchors.verticalCenter: parent.verticalCenter
+              width: Math.min(implicitWidth, parent.width * 0.45)
+              font.pixelSize: root.smallSize
+              text: parent.task.label || ""
+            }
+            Label {
+              anchors.left: taskLabel.right
+              anchors.leftMargin: root.smallSize * 0.8
+              anchors.right: taskTime.left
+              anchors.rightMargin: root.smallSize
+              anchors.verticalCenter: parent.verticalCenter
+              font.pixelSize: root.smallSize
+              color: root.dim
+              text: [parent.task.step || "", parent.more > 0 ? "+" + parent.more + " more" : ""].filter(function(s) { return s }).join("  ·  ")
+            }
+            Label {
+              id: taskTime
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              font.pixelSize: root.smallSize
+              color: root.dim
+              text: Model.span(parent.task.elapsed)
+            }
+          }
         }
       }
     }

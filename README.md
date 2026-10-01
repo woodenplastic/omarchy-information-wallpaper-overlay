@@ -81,6 +81,12 @@ which agents run in which workspace and what they're doing:
 - **Waiting for you** (an agent that asks for permission or input) shows in
   red and pulses; working agents pulse in yellow; done is green.
 
+Under each agent are the long tasks running in its pane, as the tasks tile
+sees them: `idf.py build`, what it's doing now (`compiling wifi_mgr.c`) and
+how long it's been running. At most two show per agent, with the rest counted.
+A task belongs to an agent when it runs in the agent's herdr pane, which
+every program started there carries in `$HERDR_PANE_ID`.
+
 When the agents don't all fit, idle ones are left out first and the rest is
 counted at the bottom. Without herdr, or with its server stopped, the tile
 says so.
@@ -119,6 +125,10 @@ While there's room, a running task gets a second line:
   count, and a task seen for the first time gets no bar.
   The times are kept in
   `~/.local/state/information-wallpaper-overlay/durations.json`.
+- **Copies that read one file start to end** (`dd`, `zstd`, `xz`, `ffmpeg`,
+  `tar` and `7z` extracting) get a real bar: how far into that file they are,
+  how fast they read it, and the time left at that pace ("48%  ·  210 MB/s  ·
+  ~2m left"). Reading from a pipe, they fall back to the usual estimate.
 - **Its CPU over the last two minutes**, as a small chart of the whole
   machine: a build that uses every core fills it, one stuck on a single core
   stays low.

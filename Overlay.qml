@@ -197,9 +197,11 @@ BarWidget {
   //      that tells whether terminal commands passed (scripts/shell-hook):
   //      "on", "off", "" until asked. Asked again when the popup opens.
 
+  // The agents tile shows each agent's running tasks, so it needs the
+  // watcher too.
   TasksFeed {
     id: tasksWatcher
-    active: root.isPrimary && Model.hasKind(root.tiles, "tasks")
+    active: root.isPrimary && (Model.hasKind(root.tiles, "tasks") || Model.hasKind(root.tiles, "herdr"))
     tools: Model.taskTools(root.tiles)
   }
 
