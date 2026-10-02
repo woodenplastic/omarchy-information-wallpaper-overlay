@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "woodenplastic.information-wallpaper-overlay",
   "name": "Information Wallpaper Overlay",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "author": "Adrian Wild",
   "license": "MIT",
   "description": "Information on your wallpaper: up to six tiles behind your windows, laid out the way Hyprland tiles windows. GitHub repos with a year of commits and live Actions runs; herdr's coding agents, working or waiting for you; builds, flashing and updates, passed or failed; what's playing; or any installed plugin's menu, shown live. Follows your theme, gaps and rounding, never takes a click, uses your gh login, and can fill the lock screen too.",
