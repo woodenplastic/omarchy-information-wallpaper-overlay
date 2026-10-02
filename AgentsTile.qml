@@ -72,14 +72,7 @@ Tile {
     height: width
     radius: root.rounded ? width / 2 : width * 0.18
     color: root.stateColor(agentState)
-
-    SequentialAnimation on opacity {
-      running: root.animate && (stateDot.agentState === "working" || stateDot.agentState === "blocked")
-      loops: Animation.Infinite
-      onRunningChanged: if (!running) stateDot.opacity = 1
-      NumberAnimation { to: 0.3; duration: 800; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
-    }
+    opacity: root.animate && (agentState === "working" || agentState === "blocked") ? Model.breathe(root.pulseMs, 0.3) : 1
   }
 
   // ---- Title and the counts.

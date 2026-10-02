@@ -20,6 +20,8 @@ Rectangle {
   property bool shown: true
   readonly property real nowMs: widget ? widget.nowMs : Date.now()
   readonly property bool animate: !!widget && widget.animate && shown
+  // The desk's pulse clock (Model.breathe).
+  readonly property real pulseMs: widget && widget.pulseMs !== undefined ? widget.pulseMs : 0
 
   readonly property color fg: Color.foreground
   readonly property color dim: Util.alpha(Color.foreground, 0.55)
@@ -196,6 +198,7 @@ Rectangle {
         weeks: root.weeks
         pitch: root.pitch
         animate: root.animate
+        pulseMs: root.pulseMs
         rounded: root.rounded
         fontSize: root.smallSize
         dim: root.dim
@@ -373,13 +376,7 @@ Rectangle {
                   height: width
                   radius: root.rounded ? width * 0.22 : 0
                   color: root.stateColor(state)
-
-                  SequentialAnimation on opacity {
-                    running: root.animate && state === "running"
-                    loops: Animation.Infinite
-                    NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
-                    NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
-                  }
+                  opacity: root.animate && state === "running" ? Model.breathe(root.pulseMs, 0.35) : 1
                 }
               }
             }
@@ -506,14 +503,7 @@ Rectangle {
               height: width
               radius: root.rounded ? width * 0.22 : 0
               color: root.stateColor(pullRow.checks)
-
-              SequentialAnimation on opacity {
-                running: root.animate && pullRow.checks === "running"
-                loops: Animation.Infinite
-                onRunningChanged: if (!running) checksBlock.opacity = 1
-                NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
-                NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
-              }
+              opacity: root.animate && pullRow.checks === "running" ? Model.breathe(root.pulseMs, 0.35) : 1
             }
             Label {
               id: pullNumber
@@ -564,6 +554,7 @@ Rectangle {
         runs: root.widget && root.ok ? root.widget.liveRuns(root.result) : []
         nowMs: root.nowMs
         animate: root.animate
+        pulseMs: root.pulseMs
         fontSize: root.bodySize
         titleSize: root.statSize
         smallSize: root.smallSize

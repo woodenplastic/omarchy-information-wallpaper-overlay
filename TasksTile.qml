@@ -62,14 +62,7 @@ Tile {
     height: width
     radius: root.rounded ? width * 0.22 : 0
     color: root.stateColor(taskState)
-
-    SequentialAnimation on opacity {
-      running: root.animate && block.taskState === "running"
-      loops: Animation.Infinite
-      onRunningChanged: if (!running) block.opacity = 1
-      NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
-    }
+    opacity: root.animate && taskState === "running" ? Model.breathe(root.pulseMs, 0.35) : 1
   }
 
   // ---- Title and the counts.
@@ -314,11 +307,9 @@ Tile {
               radius: parent.radius
               width: parent.width * row.fraction
               color: root.stateColor("running")
+              // Steps with each update rather than gliding: a glide as long
+              // as the time between updates kept the desk drawing at 60 fps.
               opacity: row.over && !row.measured ? 0.45 : 0.9
-              Behavior on width {
-                enabled: root.animate
-                NumberAnimation { duration: 2000 }
-              }
             }
           }
         }

@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import "Model.js" as Model
 
 // A KiCad board, from scripts/board: a 3D render made again after each
 // save, then views of it from six sides, shown in turn while the desk
@@ -75,14 +76,7 @@ Tile {
     height: width
     radius: root.rounded ? width * 0.22 : 0
     color: root.checkColor(checkState)
-
-    SequentialAnimation on opacity {
-      running: root.animate && block.pulse
-      loops: Animation.Infinite
-      onRunningChanged: if (!running) block.opacity = 1
-      NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
-    }
+    opacity: root.animate && pulse ? Model.breathe(root.pulseMs, 0.35) : 1
   }
 
   // ---- The board's name, then its checks.

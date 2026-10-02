@@ -23,6 +23,8 @@ Rectangle {
   property bool shown: true
   readonly property real nowMs: widget ? widget.nowMs : Date.now()
   readonly property bool animate: !!widget && widget.animate && shown
+  // The desk's pulse clock (Model.breathe).
+  readonly property real pulseMs: widget && widget.pulseMs !== undefined ? widget.pulseMs : 0
 
   readonly property color fg: Color.foreground
   readonly property color dim: Util.alpha(Color.foreground, 0.55)

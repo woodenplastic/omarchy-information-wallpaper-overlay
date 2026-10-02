@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import "Model.js" as Model
 
 // USB devices, from scripts/devices: dev boards and debug probes first,
 // each with its serial port, the program that has it open, and how long
@@ -95,14 +96,7 @@ Tile {
     height: width
     radius: root.rounded ? width * 0.22 : 0
     color: root.stateColor(boardState)
-
-    SequentialAnimation on opacity {
-      running: root.animate && block.boardState === "busy"
-      loops: Animation.Infinite
-      onRunningChanged: if (!running) block.opacity = 1
-      NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
-    }
+    opacity: root.animate && boardState === "busy" ? Model.breathe(root.pulseMs, 0.35) : 1
   }
 
   // ---- Title and the counts.

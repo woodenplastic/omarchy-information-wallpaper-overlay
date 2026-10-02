@@ -14,6 +14,9 @@ Item {
   property int weeks: 53
   property real pitch: 16
   property bool animate: true
+  // The desk's pulse clock (Model.breathe): today breathes and the sparks
+  // light and fade on its ticks, never at the display's frame rate.
+  property real pulseMs: 0
   property bool rounded: false
   property real fontSize: Style.font.caption
   property color accent: Color.accent
@@ -113,27 +116,21 @@ Item {
       }
     }
 
-    SequentialAnimation on opacity {
-      running: root.animate && today.visible
-      loops: Animation.Infinite
-      onRunningChanged: if (!running) today.opacity = 1
-      NumberAnimation { to: 0.35; duration: 1600; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 1600; easing.type: Easing.InOutSine }
-    }
+    opacity: root.animate ? Model.breathe(root.pulseMs, 0.35) : 1
   }
 
-  // ---- Sparks: a few cells with commits light up and fade, one at a time.
-  Timer {
-    interval: 520
-    repeat: true
-    running: root.animate && root.active.length > 0
-    onTriggered: {
-      for (var i = 0; i < sparks.count; i++) {
-        var spark = sparks.itemAt(i)
-        if (spark && !spark.busy) {
-          spark.fire(root.active[Math.floor(Math.random() * root.active.length)])
-          return
-        }
+  // ---- Sparks: a few cells with commits light up and fade, one at a time,
+  //      a new one about every half second.
+  property real lastSpark: 0
+
+  onPulseMsChanged: {
+    if (!root.animate || root.active.length === 0 || root.pulseMs - root.lastSpark < 500) return
+    for (var i = 0; i < sparks.count; i++) {
+      var spark = sparks.itemAt(i)
+      if (spark && !spark.busy) {
+        spark.fire(root.active[Math.floor(Math.random() * root.active.length)])
+        root.lastSpark = root.pulseMs
+        return
       }
     }
   }
@@ -144,17 +141,20 @@ Item {
 
     Item {
       id: spark
-      property bool busy: flash.running
+      property real litAt: -1e9
+      readonly property real age: root.pulseMs - litAt
+      readonly property bool busy: age < Model.SPARK_RISE_MS + Model.SPARK_FADE_MS
       x: 0
       y: 0
       width: root.cell
       height: root.cell
-      opacity: 0
+      visible: root.animate && busy
+      opacity: visible ? Model.sparkOpacity(age) : 0
 
       function fire(c) {
         spark.x = root.gridX + c.col * root.pitch
         spark.y = root.gridY + c.row * root.pitch
-        flash.restart()
+        spark.litAt = root.pulseMs
       }
 
       Rectangle {
@@ -171,11 +171,6 @@ Item {
         }
       }
 
-      SequentialAnimation {
-        id: flash
-        NumberAnimation { target: spark; property: "opacity"; from: 0; to: 0.95; duration: 650; easing.type: Easing.OutSine }
-        NumberAnimation { target: spark; property: "opacity"; to: 0; duration: 1700; easing.type: Easing.InSine }
-      }
     }
   }
 

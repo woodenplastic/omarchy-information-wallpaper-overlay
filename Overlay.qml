@@ -591,6 +591,17 @@ BarWidget {
   readonly property bool desktopShown: deskScreens.some(screenShown)
   readonly property bool animate: animations && desktopShown
 
+  // The pulse clock everything that breathes follows (Model.breathe): it
+  // ticks while the desk animates, or the bar's dot pulses for a run.
+  property real pulseMs: 0
+
+  Timer {
+    running: root.animate || root.ciState === "running"
+    repeat: true
+    interval: Math.round(1000 / Model.PULSE_HZ)
+    onTriggered: root.pulseMs = Date.now()
+  }
+
   // ---- Desk: the tiles on the desktop of each display picked.
 
   Variants {
@@ -782,14 +793,7 @@ BarWidget {
       border.color: root.bar && root.bar.background !== undefined ? root.bar.background : Color.background
       x: Math.round(parent.width / 2 + Style.bar.iconCanvas / 2 - width * 0.7)
       y: Math.round(parent.height / 2 + Style.bar.iconCanvas / 2 - height * 0.7)
-
-      SequentialAnimation on opacity {
-        running: root.ciState === "running"
-        loops: Animation.Infinite
-        onRunningChanged: if (!running) dot.opacity = 1
-        NumberAnimation { to: 0.3; duration: 700; easing.type: Easing.InOutSine }
-        NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
-      }
+      opacity: root.ciState === "running" ? Model.breathe(root.pulseMs, 0.3) : 1
     }
   }
 }

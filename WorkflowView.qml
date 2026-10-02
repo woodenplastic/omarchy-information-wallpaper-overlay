@@ -11,6 +11,8 @@ Item {
   property var runs: []
   property real nowMs: Date.now()
   property bool animate: true
+  // The desk's pulse clock (Model.breathe).
+  property real pulseMs: 0
   property real fontSize: Style.font.body
   property real titleSize: Style.font.subtitle
   property real smallSize: Style.font.caption
@@ -81,13 +83,7 @@ Item {
     text: root.glyph(state)
     color: root.stateColor(state)
     horizontalAlignment: Text.AlignHCenter
-
-    SequentialAnimation on opacity {
-      running: root.animate && parent && state === "running"
-      loops: Animation.Infinite
-      NumberAnimation { to: 0.3; duration: 700; easing.type: Easing.InOutSine }
-      NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
-    }
+    opacity: root.animate && state === "running" ? Model.breathe(root.pulseMs, 0.3) : 1
   }
 
   // ---- The run: name and number, its commit, state and time.

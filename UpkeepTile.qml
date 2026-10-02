@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import qs.Commons
+import "Model.js" as Model
 
 // The Omarchy tile: how the machine is doing, from scripts/upkeep: whether it needs a reboot,
 // pending updates, failed units, the last snapshot and free space. A ring
@@ -270,13 +271,7 @@ Tile {
             }
           }
 
-          SequentialAnimation on opacity {
-            running: root.animate && arc.arcState === "bad"
-            loops: Animation.Infinite
-            onRunningChanged: if (!running) arc.opacity = 1
-            NumberAnimation { to: 0.35; duration: 900; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1; duration: 900; easing.type: Easing.InOutSine }
-          }
+          opacity: root.animate && arcState === "bad" ? Model.breathe(root.pulseMs, 0.35) : 1
         }
       }
 

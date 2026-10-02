@@ -50,6 +50,16 @@ Item {
 
   // Set by the design: while the screen is lit.
   property bool animate: false
+
+  // The pulse clock the tiles breathe by (Model.breathe), while animating.
+  property real pulseMs: 0
+
+  Timer {
+    running: root.animate
+    repeat: true
+    interval: Math.round(1000 / Model.PULSE_HZ)
+    onTriggered: root.pulseMs = Date.now()
+  }
   // Set by the design: on the real lock screen or its full preview, not in
   // the explorer's thumbnails, which would each ask herdr and watch tasks.
   property bool live: false

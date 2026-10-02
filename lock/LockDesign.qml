@@ -145,14 +145,7 @@ DesignBase {
           height: width
           radius: width / 2
           color: lock.ciColor
-
-          SequentialAnimation on opacity {
-            running: feed.animate && lock.ciState === "running"
-            loops: Animation.Infinite
-            onRunningChanged: if (!running) ciDot.opacity = 1
-            NumberAnimation { to: 0.3; duration: 700; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
-          }
+          opacity: feed.animate && lock.ciState === "running" ? Model.breathe(feed.pulseMs, 0.3) : 1
         }
 
         Text {

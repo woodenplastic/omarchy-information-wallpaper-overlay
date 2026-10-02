@@ -7,6 +7,31 @@ var KINDS = ["github", "herdr", "music", "tasks", "plugin", "workspace", "upkeep
 var QUIET_KINDS = ["github", "herdr", "tasks", "workspace", "upkeep", "projects", "devices", "board"]
 var ACTIVITY_DAYS = 28
 
+// ---- Pulse: everything on the desk that breathes or sparkles follows one
+//      clock (pulseMs in Overlay and LockFeed), ticking PULSE_HZ times a
+//      second while the desk animates. A Qt Quick window draws all of itself
+//      again for any change, so a dot pulsing at 60 fps cost as much as
+//      animating the whole full-screen desk, a third of a core on a small
+//      machine; stepped a few times a second it costs a few percent.
+var PULSE_HZ = 5
+var PULSE_MS = 2000
+
+// The opacity of a dot breathing down to `low` and back, at clock time `ms`.
+function breathe(ms, low) {
+  var phase = 0.5 - 0.5 * Math.cos(2 * Math.PI * (ms % PULSE_MS) / PULSE_MS)
+  return 1 - (1 - low) * phase
+}
+
+var SPARK_RISE_MS = 650
+var SPARK_FADE_MS = 1700
+
+// A heatmap spark's opacity `age` ms after it lit: up quickly, out slowly.
+function sparkOpacity(age) {
+  if (!(age >= 0) || age >= SPARK_RISE_MS + SPARK_FADE_MS) return 0
+  if (age < SPARK_RISE_MS) return 0.95 * Math.sin(age / SPARK_RISE_MS * Math.PI / 2)
+  return 0.95 * Math.cos((age - SPARK_RISE_MS) / SPARK_FADE_MS * Math.PI / 2)
+}
+
 // "owner/repo" from what people paste: a GitHub URL, an SSH remote or the
 // name itself. "" when it isn't one.
 function normalizeRepo(text) {
